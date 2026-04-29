@@ -101,6 +101,14 @@ cpp/doxygen/xml
 
 #Java
 target
+# Local Maven repo created by java/ci/build-in-docker.sh (Jenkins-style
+# isolated cache). The dev container instead bind-mounts ~/.m2, so any
+# .m2 at the repo root is incidental and should not be tracked.
+/.m2/
+# Recreated on every Maven `validate` phase by gmaven-plugin:1.5, which
+# compiles the inline Groovy <source> in java/pom.xml and writes its
+# class file to ./bin/ (the plugin has no outputDirectory knob).
+/java/bin/
 
 # Translations
 *.mo

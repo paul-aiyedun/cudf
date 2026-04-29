@@ -71,12 +71,23 @@ public final class HybridScanIoExample {
       BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, colRef, lit);
 
       try (CompiledExpression filter = expr.compile()) {
+        // The hybrid scan reader splits the projected columns into two sets internally:
+        //   * "filter columns"  — columns referenced by the filter expression
+        //   * "payload columns" — projected columns that are NOT in the filter
+        // To exercise both materialize calls we include all columns from the fixture
+        // (`id`, `zip`, `num_units`); the filter column is `zip`, leaving `id` and
+        // `num_units` as the payload set. Adjust this if you point the example at
+        // a different file.
+        ParquetOptions readOpts = ParquetOptions.builder()
+            .includeColumn("id")
+            .includeColumn("zip")
+            .includeColumn("num_units")
+            .build();
+
         // 1) Legacy reader path
         long legacyRows;
         long t0 = System.nanoTime();
-        try (Table legacyTable = Table.readParquet(ParquetOptions.builder()
-                .includeColumn(columnName)
-                .build(), path)) {
+        try (Table legacyTable = Table.readParquet(readOpts, path)) {
           legacyRows = legacyTable.getRowCount();
         }
         long legacyMs = (System.nanoTime() - t0) / 1_000_000L;
@@ -85,8 +96,7 @@ public final class HybridScanIoExample {
         // 2) Hybrid scan two-step
         try (HostMemoryBuffer file = Util.readFileToHostBuffer(path);
              HostMemoryBuffer footer = Util.extractFooter(file);
-             HybridScanReader reader = new HybridScanReader(footer,
-                 ParquetOptions.builder().includeColumn(columnName).build(), filter)) {
+             HybridScanReader reader = new HybridScanReader(footer, readOpts, filter)) {
           long t1 = System.nanoTime();
           int[] all = reader.allRowGroups();
           int[] survived = reader.filterRowGroupsWithStats(all);

@@ -52,9 +52,10 @@ public final class ColumnNameReference extends AstExpression {
 
   @Override
   void serialize(ByteBuffer bb) {
-    byte[] nameBytes = columnName.getBytes(StandardCharsets.UTF_8);
     ExpressionType.COLUMN_NAME_REFERENCE.serialize(bb);
     bb.putInt(nameBytes.length);
+    
+    byte[] nameBytes = columnName.getBytes(StandardCharsets.UTF_8);
     bb.put(nameBytes);
   }
 

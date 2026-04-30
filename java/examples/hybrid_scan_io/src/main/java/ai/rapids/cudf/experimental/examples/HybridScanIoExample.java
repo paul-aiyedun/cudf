@@ -74,7 +74,7 @@ public final class HybridScanIoExample {
         // The hybrid scan reader splits the projected columns into two sets internally:
         //   * "filter columns"  — columns referenced by the filter expression
         //   * "payload columns" — projected columns that are NOT in the filter
-        // To exercise both materialize calls we include all columns from the fixture
+        // To exercise both materialize calls, we include all columns from the fixture
         // (`id`, `zip`, `num_units`); the filter column is `zip`, leaving `id` and
         // `num_units` as the payload set. Adjust this if you point the example at
         // a different file.
@@ -100,7 +100,7 @@ public final class HybridScanIoExample {
           long t1 = System.nanoTime();
           int[] all = reader.allRowGroups();
           int[] survived = reader.filterRowGroupsWithStats(all);
-          System.out.printf("Hybrid scan: row_groups=%d after_stats=%d%n",
+          System.out.printf("Hybrid scan: all_row_groups=%d after_stats=%d%n",
               all.length, survived.length);
 
           if (survived.length == 0) {

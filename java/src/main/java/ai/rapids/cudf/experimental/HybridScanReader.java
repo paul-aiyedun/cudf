@@ -95,7 +95,7 @@ public class HybridScanReader implements AutoCloseable {
    *
    * @param footerBuffer host-resident footer bytes (must remain valid until this constructor
    *                     returns; the JNI reads the bytes synchronously)
-   * @param opts         Parquet reader options. {@link ParquetOptions#DEFAULT} is acceptable.
+   * @param opts         Parquet reader options. {@link ParquetOptions#DEFAULT} by default.
    * @param filter       optional compiled AST filter expression. May be {@code null}.
    *                     The expression typically uses {@link ai.rapids.cudf.ast.ColumnNameReference}
    *                     to refer to columns by name.
@@ -146,7 +146,7 @@ public class HybridScanReader implements AutoCloseable {
   }
 
   /**
-   * Materialize the {@code ColumnIndex} / {@code OffsetIndex} structs (collectively the page
+   * Materialize the {@code ColumnIndex} / {@code OffsetIndex} structs (collectively,the page
    * index) from the supplied bytes so that subsequent calls (e.g.
    * {@link #buildRowMaskWithPageIndexStats(int[])}) can use them.
    *
@@ -266,7 +266,7 @@ public class HybridScanReader implements AutoCloseable {
 
   /**
    * @return an all-true BOOL8 column whose length equals the total number of rows in the
-   *         given row groups. The column is owned by the caller.
+   *         given row groups.
    */
   public ColumnVector buildAllTrueRowMask(int[] rowGroupIndices) {
     assertNotClosed();

@@ -154,7 +154,7 @@ public class HybridScanReaderTest extends CudfTestBase {
   }
 
   // --------------------------------------------------------------------
-  // Tests: basic reader lifecycle & metadata
+  // Tests: metadata
   // --------------------------------------------------------------------
 
   @Test
@@ -212,7 +212,103 @@ public class HybridScanReaderTest extends CudfTestBase {
   }
 
   // --------------------------------------------------------------------
-  // Tests: byte ranges (no filter)
+  // Tests: row group enumeration
+  // --------------------------------------------------------------------
+
+  @Test
+  void testResetColumnSelection(@TempDir Path tmp) throws IOException {
+    File pq = tmp.resolve("fixture.parquet").toFile();
+    writeFixtureParquet(pq);
+    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
+         HostMemoryBuffer footer = extractFooter(file);
+         HybridScanReader reader = new HybridScanReader(footer,
+             optsForColumns("id", "zip", "num_units"), null)) {
+      // First do something that causes column selection to be cached internally...
+      int[] rgs = reader.allRowGroups();
+      reader.payloadColumnChunksByteRanges(rgs);
+      // Then reset; should not throw.
+      assertDoesNotThrow(reader::resetColumnSelection);
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // Tests: row group filtering
+  // --------------------------------------------------------------------
+
+  @Test
+  void testFilterRowGroupsWithStats(@TempDir Path tmp) throws IOException {
+    File pq = tmp.resolve("fixture.parquet").toFile();
+    writeFixtureParquet(pq);
+    // zip values across the file are 10000, 10100, ..., 309900. Row groups split at 1000
+    // rows each, so the second and third row groups have all-larger zips. Use a threshold
+    // that prunes the first row group.
+    ColumnNameReference zipCol = new ColumnNameReference("zip");
+    Literal lit = Literal.ofInt(150000);
+    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
+    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
+         HostMemoryBuffer footer = extractFooter(file);
+         CompiledExpression filter = expr.compile();
+         HybridScanReader reader = new HybridScanReader(footer,
+             optsForColumns("id", "zip", "num_units"), filter)) {
+      int[] all = reader.allRowGroups();
+      int[] filtered = reader.filterRowGroupsWithStats(all);
+      // The stats filter must never expand the input set.
+      assertTrue(filtered.length <= all.length);
+      // Pruning depends on whether the writer emitted multiple row groups with disjoint
+      // stats ranges. Only assert the strict pruning property when we actually have more
+      // than one input row group.
+      if (all.length > 1) {
+        assertTrue(filtered.length < all.length,
+            "Stats filter should prune at least one row group when " + all.length +
+            " input row groups have disjoint zip ranges, got " + filtered.length);
+      }
+    }
+  }
+
+  @Test
+  void testSecondaryFiltersByteRangesShape(@TempDir Path tmp) throws IOException {
+    // Even when the file has no bloom filters / dictionary pages applicable, the call
+    // should succeed and return a structurally-valid SecondaryFilterRanges.
+    File pq = tmp.resolve("fixture.parquet").toFile();
+    writeFixtureParquet(pq);
+    ColumnNameReference zipCol = new ColumnNameReference("zip");
+    Literal lit = Literal.ofInt(150000);
+    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
+    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
+         HostMemoryBuffer footer = extractFooter(file);
+         CompiledExpression filter = expr.compile();
+         HybridScanReader reader = new HybridScanReader(footer,
+             optsForColumns("id", "zip", "num_units"), filter)) {
+      int[] rgs = reader.allRowGroups();
+      SecondaryFilterRanges sfr = reader.secondaryFiltersByteRanges(rgs);
+      assertNotNull(sfr);
+      assertNotNull(sfr.bloomFilterRanges());
+      assertNotNull(sfr.dictionaryPageRanges());
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // Tests: row mask
+  // --------------------------------------------------------------------
+
+  @Test
+  void testBuildAllTrueRowMask(@TempDir Path tmp) throws IOException {
+    File pq = tmp.resolve("fixture.parquet").toFile();
+    int rows = writeFixtureParquet(pq);
+    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
+         HostMemoryBuffer footer = extractFooter(file);
+         HybridScanReader reader = new HybridScanReader(footer,
+             optsForColumns("id", "zip", "num_units"), null)) {
+      int[] rgs = reader.allRowGroups();
+      try (ColumnVector mask = reader.buildAllTrueRowMask(rgs)) {
+        assertEquals(DType.BOOL8, mask.getType());
+        assertEquals(rows, mask.getRowCount());
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // Tests: byte ranges
   // --------------------------------------------------------------------
 
   @Test
@@ -255,96 +351,8 @@ public class HybridScanReaderTest extends CudfTestBase {
   }
 
   // --------------------------------------------------------------------
-  // Tests: convenience materialize-from-buffer
+  // Tests: single-shot materialize
   // --------------------------------------------------------------------
-
-  @Test
-  void testMaterializeFromBufferNoFilter(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    int rows = writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null);
-         Table table = reader.materializeFromBuffer(file)) {
-      assertEquals(3, table.getNumberOfColumns());
-      assertEquals(rows, table.getRowCount());
-    }
-  }
-
-  @Test
-  void testMaterializeFromBufferMatchesReadParquet(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null);
-         Table hybrid = reader.materializeFromBuffer(file);
-         Table standard = Table.readParquet(
-             optsForColumns("id", "zip", "num_units"), pq)) {
-      assertEquals(standard.getNumberOfColumns(), hybrid.getNumberOfColumns());
-      assertEquals(standard.getRowCount(), hybrid.getRowCount());
-      for (int i = 0; i < standard.getNumberOfColumns(); i++) {
-        assertEquals(standard.getColumn(i).getType(), hybrid.getColumn(i).getType(),
-            "Column " + i + " type mismatch");
-      }
-    }
-  }
-
-  // --------------------------------------------------------------------
-  // Tests: row group filtering
-  // --------------------------------------------------------------------
-
-  @Test
-  void testFilterRowGroupsWithStats(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    // zip values across the file are 10000, 10100, ..., 309900. Row groups split at 1000
-    // rows each, so the second and third row groups have all-larger zips. Use a threshold
-    // that prunes the first row group.
-    ColumnNameReference zipCol = new ColumnNameReference("zip");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), filter)) {
-      int[] all = reader.allRowGroups();
-      int[] filtered = reader.filterRowGroupsWithStats(all);
-      // The stats filter must never expand the input set.
-      assertTrue(filtered.length <= all.length);
-      // Pruning depends on whether the writer emitted multiple row groups with disjoint
-      // stats ranges. Only assert the strict pruning property when we actually have more
-      // than one input row group.
-      if (all.length > 1) {
-        assertTrue(filtered.length < all.length,
-            "Stats filter should prune at least one row group when " + all.length +
-            " input row groups have disjoint zip ranges, got " + filtered.length);
-      }
-    }
-  }
-
-  // --------------------------------------------------------------------
-  // Tests: row mask + explicit two-step flow
-  // --------------------------------------------------------------------
-
-  @Test
-  void testBuildAllTrueRowMask(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    int rows = writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
-      int[] rgs = reader.allRowGroups();
-      try (ColumnVector mask = reader.buildAllTrueRowMask(rgs)) {
-        assertEquals(DType.BOOL8, mask.getType());
-        assertEquals(rows, mask.getRowCount());
-      }
-    }
-  }
 
   @Test
   void testExplicitTwoStepFlow(@TempDir Path tmp) throws IOException {
@@ -405,7 +413,7 @@ public class HybridScanReaderTest extends CudfTestBase {
   }
 
   // --------------------------------------------------------------------
-  // Tests: chunked APIs
+  // Tests: chunked materialize
   // --------------------------------------------------------------------
 
   @Test
@@ -465,6 +473,44 @@ public class HybridScanReaderTest extends CudfTestBase {
   }
 
   // --------------------------------------------------------------------
+  // Tests: convenience materialize-from-buffer
+  // --------------------------------------------------------------------
+
+  @Test
+  void testMaterializeFromBufferNoFilter(@TempDir Path tmp) throws IOException {
+    File pq = tmp.resolve("fixture.parquet").toFile();
+    int rows = writeFixtureParquet(pq);
+    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
+         HostMemoryBuffer footer = extractFooter(file);
+         HybridScanReader reader = new HybridScanReader(footer,
+             optsForColumns("id", "zip", "num_units"), null);
+         Table table = reader.materializeFromBuffer(file)) {
+      assertEquals(3, table.getNumberOfColumns());
+      assertEquals(rows, table.getRowCount());
+    }
+  }
+
+  @Test
+  void testMaterializeFromBufferMatchesReadParquet(@TempDir Path tmp) throws IOException {
+    File pq = tmp.resolve("fixture.parquet").toFile();
+    writeFixtureParquet(pq);
+    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
+         HostMemoryBuffer footer = extractFooter(file);
+         HybridScanReader reader = new HybridScanReader(footer,
+             optsForColumns("id", "zip", "num_units"), null);
+         Table hybrid = reader.materializeFromBuffer(file);
+         Table standard = Table.readParquet(
+             optsForColumns("id", "zip", "num_units"), pq)) {
+      assertEquals(standard.getNumberOfColumns(), hybrid.getNumberOfColumns());
+      assertEquals(standard.getRowCount(), hybrid.getRowCount());
+      for (int i = 0; i < standard.getNumberOfColumns(); i++) {
+        assertEquals(standard.getColumn(i).getType(), hybrid.getColumn(i).getType(),
+            "Column " + i + " type mismatch");
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------
   // Tests: AST extension
   // --------------------------------------------------------------------
 
@@ -515,44 +561,6 @@ public class HybridScanReaderTest extends CudfTestBase {
           optsForColumns("id", "zip", "num_units"), null);
       reader.close();
       assertThrows(IllegalStateException.class, reader::allRowGroups);
-    }
-  }
-
-  @Test
-  void testResetColumnSelection(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
-      // First do something that causes column selection to be cached internally...
-      int[] rgs = reader.allRowGroups();
-      reader.payloadColumnChunksByteRanges(rgs);
-      // Then reset; should not throw.
-      assertDoesNotThrow(reader::resetColumnSelection);
-    }
-  }
-
-  @Test
-  void testSecondaryFiltersByteRangesShape(@TempDir Path tmp) throws IOException {
-    // Even when the file has no bloom filters / dictionary pages applicable, the call
-    // should succeed and return a structurally-valid SecondaryFilterRanges.
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), filter)) {
-      int[] rgs = reader.allRowGroups();
-      SecondaryFilterRanges sfr = reader.secondaryFiltersByteRanges(rgs);
-      assertNotNull(sfr);
-      assertNotNull(sfr.bloomFilterRanges());
-      assertNotNull(sfr.dictionaryPageRanges());
     }
   }
 }

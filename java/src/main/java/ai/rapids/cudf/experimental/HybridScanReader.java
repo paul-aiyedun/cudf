@@ -18,6 +18,8 @@ import ai.rapids.cudf.ast.CompiledExpression;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Arrays;
+
 /**
  * Experimental Parquet hybrid-scan reader.
  *
@@ -49,6 +51,53 @@ import org.slf4j.LoggerFactory;
 public class HybridScanReader implements AutoCloseable {
   static {
     NativeDepsLoader.loadNativeDeps();
+  }
+
+  /**
+   * Selects which row mask is built internally by
+   * {@link #materializeFilterColumns(int[], DeviceMemoryBuffer[], UseDataPageMask, RowMaskKind)}
+   * and
+   * {@link #setupChunkingForFilterColumns(long, long, int[], UseDataPageMask, RowMaskKind, DeviceMemoryBuffer[])}.
+   */
+  public enum RowMaskKind {
+    /** All rows initially visible — no page-level pruning. */
+    ALL_TRUE,
+    /**
+     * Row visibility seeded from page-index statistics. Requires that
+     * {@link #setupPageIndex(HostMemoryBuffer)} has already been called.
+     */
+    PAGE_INDEX_STATS
+  }
+
+  /**
+   * The result of a combined row-mask-build + filter-column-materialization call.
+   *
+   * <p>Both the filter {@link Table} and the mutated row {@link ColumnVector} mask are
+   * owned by this object. Close via try-with-resources to release both.
+   */
+  public static final class FilterMaterializationResult implements AutoCloseable {
+    private final Table table;
+    private final ColumnVector rowMask;
+    private boolean closed = false;
+
+    FilterMaterializationResult(Table table, ColumnVector rowMask) {
+      this.table = table;
+      this.rowMask = rowMask;
+    }
+
+    /** @return the materialized filter column table. */
+    public Table table() { return table; }
+
+    /** @return the (mutated) row mask after the filter expression was applied. */
+    public ColumnVector rowMask() { return rowMask; }
+
+    @Override
+    public synchronized void close() {
+      if (closed) return;
+      try { table.close(); } finally {
+        try { rowMask.close(); } finally { closed = true; }
+      }
+    }
   }
 
   private static final Logger log = LoggerFactory.getLogger(HybridScanReader.class);
@@ -146,9 +195,9 @@ public class HybridScanReader implements AutoCloseable {
   }
 
   /**
-   * Materialize the {@code ColumnIndex} / {@code OffsetIndex} structs (collectively,the page
-   * index) from the supplied bytes so that subsequent calls (e.g.
-   * {@link #buildRowMaskWithPageIndexStats(int[])}) can use them.
+   * Materialize the {@code ColumnIndex} / {@code OffsetIndex} structs (collectively, the page
+   * index) from the supplied bytes so that subsequent calls using
+   * {@link RowMaskKind#PAGE_INDEX_STATS} can use them.
    *
    * @param pageIndexBuffer host-resident page index bytes
    */
@@ -261,32 +310,6 @@ public class HybridScanReader implements AutoCloseable {
   }
 
   // ----------------------------------------------------------------------
-  // Row mask
-  // ----------------------------------------------------------------------
-
-  /**
-   * @return an all-true BOOL8 column whose length equals the total number of rows in the
-   *         given row groups.
-   */
-  public ColumnVector buildAllTrueRowMask(int[] rowGroupIndices) {
-    assertNotClosed();
-    requireNonNullRowGroups(rowGroupIndices);
-    return new ColumnVector(buildAllTrueRowMask(cleaner.nativeHandle, rowGroupIndices));
-  }
-
-  /**
-   * @return a BOOL8 column whose entries are {@code true} for rows that survive page-level
-   *         statistics in the page index (set up via {@link #setupPageIndex(HostMemoryBuffer)})
-   *         subject to the same filter as row groups.
-   */
-  public ColumnVector buildRowMaskWithPageIndexStats(int[] rowGroupIndices) {
-    assertNotClosed();
-    requireNonNullRowGroups(rowGroupIndices);
-    return new ColumnVector(
-        buildRowMaskWithPageIndexStats(cleaner.nativeHandle, rowGroupIndices));
-  }
-
-  // ----------------------------------------------------------------------
   // Byte ranges
   // ----------------------------------------------------------------------
 
@@ -316,29 +339,36 @@ public class HybridScanReader implements AutoCloseable {
   // ----------------------------------------------------------------------
 
   /**
-   * Materialize only the filter columns and update {@code rowMask} to indicate which rows
-   * survive both page pruning and the filter expression.
+   * Build a row mask according to {@code kind} and materialize the filter columns, applying
+   * the compiled filter expression. The row mask and the resulting filter table are returned
+   * together as a {@link FilterMaterializationResult}; close it via try-with-resources.
+   *
+   * <p>Pass {@link RowMaskKind#ALL_TRUE} when no page-index-based pruning is needed.
+   * Pass {@link RowMaskKind#PAGE_INDEX_STATS} to seed the mask from page-level statistics
+   * (requires {@link #setupPageIndex(HostMemoryBuffer)} to have been called first).
    *
    * @param rowGroupIndices  row groups to read
    * @param columnChunkData  device buffers holding the filter column chunks, in the order
    *                         returned by {@link #filterColumnChunksByteRanges(int[])}
-   * @param rowMask          mutable row mask (updated in place)
    * @param mode             whether to compute and use a data page mask
-   * @return the materialized filter column table
+   * @param kind             how to initialise the row mask
+   * @return combined filter table and mutated row mask; caller must close this result
    */
-  public Table materializeFilterColumns(int[] rowGroupIndices,
-                                        DeviceMemoryBuffer[] columnChunkData,
-                                        ColumnVector rowMask,
-                                        UseDataPageMask mode) {
+  public FilterMaterializationResult materializeFilterColumns(int[] rowGroupIndices,
+                                                              DeviceMemoryBuffer[] columnChunkData,
+                                                              UseDataPageMask mode,
+                                                              RowMaskKind kind) {
     assertNotClosed();
     requireNonNullRowGroups(rowGroupIndices);
-    requireNonNullRowMask(rowMask);
     long[] addrs = bufferAddrs(columnChunkData);
     long[] lens = bufferLens(columnChunkData);
-    long rowMaskColumn = requireOwnedColumnHandle(rowMask);
-    long[] handles = materializeFilterColumns(cleaner.nativeHandle, rowGroupIndices,
-        addrs, lens, rowMaskColumn, mode.getNativeValue());
-    return new Table(handles);
+    boolean allTrue = (kind == RowMaskKind.ALL_TRUE);
+    long[] handles = materializeFilterColumnsWithKind(cleaner.nativeHandle, rowGroupIndices,
+        addrs, lens, mode.getNativeValue(), allTrue);
+    ColumnVector rowMask = new ColumnVector(handles[0]);
+    long[] tableHandles = Arrays.copyOfRange(handles, 1, handles.length);
+    Table table = new Table(tableHandles);
+    return new FilterMaterializationResult(table, rowMask);
   }
 
   /**
@@ -385,33 +415,38 @@ public class HybridScanReader implements AutoCloseable {
   // ----------------------------------------------------------------------
 
   /**
-   * Set up chunking state for filter-column materialization. Subsequent calls to
-   * {@link #materializeFilterColumnsChunk(ColumnVector)} will yield successive chunks.
+   * Build a row mask according to {@code kind}, set up chunking state for filter-column
+   * materialization, and return the owned row mask. Subsequent calls to
+   * {@link #materializeFilterColumnsChunk(ColumnVector)} will yield successive chunks; thread
+   * the returned {@link ColumnVector} into each call and close it when done.
    *
    * @param chunkReadLimit  per-chunk byte limit, or 0 for no limit
    * @param passReadLimit   per-pass byte limit, or 0 for no limit
+   * @param kind            how to initialise the row mask
+   * @return the owned row mask {@link ColumnVector}; caller must close it
    */
-  public void setupChunkingForFilterColumns(long chunkReadLimit,
-                                            long passReadLimit,
-                                            int[] rowGroupIndices,
-                                            ColumnVector rowMask,
-                                            UseDataPageMask mode,
-                                            DeviceMemoryBuffer[] columnChunkData) {
+  public ColumnVector setupChunkingForFilterColumns(long chunkReadLimit,
+                                                    long passReadLimit,
+                                                    int[] rowGroupIndices,
+                                                    UseDataPageMask mode,
+                                                    RowMaskKind kind,
+                                                    DeviceMemoryBuffer[] columnChunkData) {
     assertNotClosed();
     requireNonNullRowGroups(rowGroupIndices);
-    requireNonNullRowMask(rowMask);
     long[] addrs = bufferAddrs(columnChunkData);
     long[] lens = bufferLens(columnChunkData);
-    setupChunkingForFilterColumns(cleaner.nativeHandle, chunkReadLimit, passReadLimit,
-        rowGroupIndices, rowMask.getNativeView(), mode.getNativeValue(), addrs, lens);
+    boolean allTrue = (kind == RowMaskKind.ALL_TRUE);
+    long rowMaskHandle = setupChunkingForFilterColumnsWithKind(cleaner.nativeHandle,
+        chunkReadLimit, passReadLimit, rowGroupIndices, mode.getNativeValue(), allTrue, addrs, lens);
+    return new ColumnVector(rowMaskHandle);
   }
 
   /** @return the next filter-column chunk; throws if no chunk is available. */
   public Table materializeFilterColumnsChunk(ColumnVector rowMask) {
     assertNotClosed();
     requireNonNullRowMask(rowMask);
-    long rowMaskColumn = requireOwnedColumnHandle(rowMask);
-    long[] handles = materializeFilterColumnsChunk(cleaner.nativeHandle, rowMaskColumn);
+    long[] handles = materializeFilterColumnsChunk(cleaner.nativeHandle,
+        rowMask.getNativeColumnHandle());
     return new Table(handles);
   }
 
@@ -551,17 +586,6 @@ public class HybridScanReader implements AutoCloseable {
     }
   }
 
-  private static long requireOwnedColumnHandle(ColumnVector rowMask) {
-    long handle = rowMask.getNativeColumnHandle();
-    if (handle == 0) {
-      throw new IllegalArgumentException(
-          "rowMask must own its underlying cudf::column (was constructed from a column_view " +
-          "without a backing column); did you obtain it from buildAllTrueRowMask or " +
-          "buildRowMaskWithPageIndexStats?");
-    }
-    return handle;
-  }
-
   private static long[] bufferAddrs(DeviceMemoryBuffer[] buffers) {
     if (buffers == null) {
       return new long[0];
@@ -631,22 +655,19 @@ public class HybridScanReader implements AutoCloseable {
                                                                  long[] bufferLengths,
                                                                  int[] rowGroupIndices);
 
-  // Row mask
-  private static native long buildAllTrueRowMask(long handle, int[] rowGroupIndices);
-  private static native long buildRowMaskWithPageIndexStats(long handle, int[] rowGroupIndices);
-
   // Byte ranges
   private static native long[] filterColumnChunksByteRanges(long handle, int[] rowGroupIndices);
   private static native long[] payloadColumnChunksByteRanges(long handle, int[] rowGroupIndices);
   private static native long[] allColumnChunksByteRanges(long handle, int[] rowGroupIndices);
 
   // Single-shot materialize
-  private static native long[] materializeFilterColumns(long handle,
-                                                        int[] rowGroupIndices,
-                                                        long[] bufferAddresses,
-                                                        long[] bufferLengths,
-                                                        long rowMaskColumnHandle,
-                                                        boolean useDataPageMask);
+  // Returns: [row_mask_col_handle, table_col0_handle, ..., table_colN_handle]
+  private static native long[] materializeFilterColumnsWithKind(long handle,
+                                                                int[] rowGroupIndices,
+                                                                long[] bufferAddresses,
+                                                                long[] bufferLengths,
+                                                                boolean useDataPageMask,
+                                                                boolean allTrue);
   private static native long[] materializePayloadColumns(long handle,
                                                          int[] rowGroupIndices,
                                                          long[] bufferAddresses,
@@ -659,14 +680,15 @@ public class HybridScanReader implements AutoCloseable {
                                                      long[] bufferLengths);
 
   // Chunked
-  private static native void setupChunkingForFilterColumns(long handle,
-                                                           long chunkReadLimit,
-                                                           long passReadLimit,
-                                                           int[] rowGroupIndices,
-                                                           long rowMaskViewHandle,
-                                                           boolean useDataPageMask,
-                                                           long[] bufferAddresses,
-                                                           long[] bufferLengths);
+  // Returns owned row mask column handle; caller threads it into materializeFilterColumnsChunk
+  private static native long setupChunkingForFilterColumnsWithKind(long handle,
+                                                                   long chunkReadLimit,
+                                                                   long passReadLimit,
+                                                                   int[] rowGroupIndices,
+                                                                   boolean useDataPageMask,
+                                                                   boolean allTrue,
+                                                                   long[] bufferAddresses,
+                                                                   long[] bufferLengths);
   private static native long[] materializeFilterColumnsChunk(long handle,
                                                              long rowMaskColumnHandle);
   private static native void setupChunkingForPayloadColumns(long handle,

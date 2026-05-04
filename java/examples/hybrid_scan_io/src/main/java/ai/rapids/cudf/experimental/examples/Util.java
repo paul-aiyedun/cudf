@@ -14,7 +14,6 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 
 /**
@@ -48,37 +47,31 @@ public final class Util {
   }
 
   /**
-   * Read just the last {@code suffixLen + footerLen} bytes from a file, given the suffix length.
-   * For most files {@code suffixLen} is 8 (the 4-byte footer length + 4-byte magic).
-   *
-   * <p>This avoids copying the entire file into memory when only the footer is needed.
+   * Reads the 4-byte little-endian footer length field from the tail of an open Parquet file.
+   * Leaves the file position undefined after returning.
+   */
+  private static int getFooterLength(RandomAccessFile raf) throws IOException {
+    raf.seek(raf.length() - FOOTER_TAIL_BYTES);
+    byte[] tail = new byte[4];
+    raf.readFully(tail);
+    return ByteBuffer.wrap(tail).order(ByteOrder.LITTLE_ENDIAN).getInt();
+  }
+
+  /**
+   * Reads only the Parquet footer bytes from {@code file} without loading the rest of the
+   * file into memory.
    */
   public static HostMemoryBuffer readFooterOnly(File file) throws IOException {
-    try (RandomAccessFile raf = new RandomAccessFile(file, "r");
-         FileChannel ch = raf.getChannel()) {
-      long fileLen = ch.size();
-      // Read the last 8 bytes (footer length + magic).
-      ByteBuffer tail = ByteBuffer.allocate(FOOTER_TAIL_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-      ch.read(tail, fileLen - FOOTER_TAIL_BYTES);
-      tail.flip();
-      int footerLen = tail.getInt();
-      // Now read the actual footer bytes.
+    try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+      int footerLen = getFooterLength(raf);
+      byte[] bytes = new byte[footerLen];
+      raf.seek(raf.length() - FOOTER_TAIL_BYTES - footerLen);
+      raf.readFully(bytes);   // guaranteed complete read — no while loop needed
       HostMemoryBuffer footer = HostMemoryBuffer.allocate(footerLen);
       try {
-        byte[] bytes = new byte[footerLen];
-        ByteBuffer footerBb = ByteBuffer.wrap(bytes);
-        long footerStart = fileLen - FOOTER_TAIL_BYTES - footerLen;
-        long pos = footerStart;
-        while (footerBb.hasRemaining()) {
-          int n = ch.read(footerBb, pos);
-          if (n < 0) {
-            throw new IOException("Unexpected EOF while reading parquet footer");
-          }
-          pos += n;
-        }
-        footer.setBytes(0, bytes, 0, bytes.length);
+        footer.setBytes(0, bytes, 0, footerLen);
         return footer;
-      } catch (IOException | RuntimeException e) {
+      } catch (RuntimeException e) {
         footer.close();
         throw e;
       }

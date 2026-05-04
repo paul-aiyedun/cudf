@@ -13,7 +13,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.rapids.cudf.ColumnVector;
 import ai.rapids.cudf.CudfTestBase;
-import ai.rapids.cudf.DType;
 import ai.rapids.cudf.DeviceMemoryBuffer;
 import ai.rapids.cudf.HostMemoryBuffer;
 import ai.rapids.cudf.ParquetOptions;
@@ -53,7 +52,7 @@ public class HybridScanReaderTest extends CudfTestBase {
 
   /**
    * Build a small 3-row-group Parquet file with int columns {@code id} (0..N-1),
-   * {@code zip} (10000 + id*100), and {@code num_units} (1..3 cycle), and write it to the
+   * {@code zip_code} (10000 + id*100), and {@code num_units} (1..3 cycle), and write it to the
    * supplied path.
    *
    * <p>The row groups are forced by writing each block of rows in a separate
@@ -66,7 +65,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     int numGroups = 3;
     int rows = rowsPerGroup * numGroups;
     ParquetWriterOptions opts = ParquetWriterOptions.builder()
-        .withNonNullableColumns("id", "zip", "num_units")
+        .withNonNullableColumns("id", "zip_code", "num_units")
         .withRowGroupSizeRows(rowsPerGroup)
         .withStatisticsFrequency(ParquetWriterOptions.StatisticsFrequency.PAGE)
         .build();
@@ -75,13 +74,13 @@ public class HybridScanReaderTest extends CudfTestBase {
         int start = g * rowsPerGroup;
         try (ColumnVector id = ColumnVector.fromInts(
                  IntStream.range(start, start + rowsPerGroup).toArray());
-             ColumnVector zip = ColumnVector.fromInts(
+             ColumnVector zipCode = ColumnVector.fromInts(
                  IntStream.range(start, start + rowsPerGroup)
                      .map(i -> 10000 + i * 100).toArray());
              ColumnVector numUnits = ColumnVector.fromInts(
                  IntStream.range(start, start + rowsPerGroup)
                      .map(i -> 1 + (i % 3)).toArray());
-             Table t = new Table(id, zip, numUnits)) {
+             Table t = new Table(id, zipCode, numUnits)) {
           writer.write(t);
         }
       }
@@ -164,7 +163,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
+             optsForColumns("id", "zip_code", "num_units"), null)) {
       int[] rgs = reader.allRowGroups();
       assertNotNull(rgs);
       assertTrue(rgs.length > 0);
@@ -179,7 +178,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
+             optsForColumns("id", "zip_code", "num_units"), null)) {
       FileMetaData md = reader.parquetMetadata();
       assertNotNull(md);
       assertEquals(rows, md.numRows());
@@ -197,7 +196,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
+             optsForColumns("id", "zip_code", "num_units"), null)) {
       // The page index may be absent for tiny files even when PAGE statistics are
       // requested, so just verify the call returns a valid ByteRange and that
       // setupPageIndex accepts the corresponding bytes when the range is non-empty.
@@ -222,7 +221,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
+             optsForColumns("id", "zip_code", "num_units"), null)) {
       // First do something that causes column selection to be cached internally...
       int[] rgs = reader.allRowGroups();
       reader.payloadColumnChunksByteRanges(rgs);
@@ -239,17 +238,17 @@ public class HybridScanReaderTest extends CudfTestBase {
   void testFilterRowGroupsWithStats(@TempDir Path tmp) throws IOException {
     File pq = tmp.resolve("fixture.parquet").toFile();
     writeFixtureParquet(pq);
-    // zip values across the file are 10000, 10100, ..., 309900. Row groups split at 1000
-    // rows each, so the second and third row groups have all-larger zips. Use a threshold
-    // that prunes the first row group.
-    ColumnNameReference zipCol = new ColumnNameReference("zip");
+    // zip_code values across the file are 10000, 10100, ..., 309900. Row groups split at 1000
+    // rows each, so the second and third row groups have all-larger zip_code values. Use a
+    // threshold that prunes the first row group.
+    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
     Literal lit = Literal.ofInt(150000);
     BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          CompiledExpression filter = expr.compile();
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), filter)) {
+             optsForColumns("id", "zip_code", "num_units"), filter)) {
       int[] all = reader.allRowGroups();
       int[] filtered = reader.filterRowGroupsWithStats(all);
       // The stats filter must never expand the input set.
@@ -260,7 +259,7 @@ public class HybridScanReaderTest extends CudfTestBase {
       if (all.length > 1) {
         assertTrue(filtered.length < all.length,
             "Stats filter should prune at least one row group when " + all.length +
-            " input row groups have disjoint zip ranges, got " + filtered.length);
+            " input row groups have disjoint zip_code ranges, got " + filtered.length);
       }
     }
   }
@@ -271,39 +270,19 @@ public class HybridScanReaderTest extends CudfTestBase {
     // should succeed and return a structurally-valid SecondaryFilterRanges.
     File pq = tmp.resolve("fixture.parquet").toFile();
     writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip");
+    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
     Literal lit = Literal.ofInt(150000);
     BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          CompiledExpression filter = expr.compile();
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), filter)) {
+             optsForColumns("id", "zip_code", "num_units"), filter)) {
       int[] rgs = reader.allRowGroups();
       SecondaryFilterRanges sfr = reader.secondaryFiltersByteRanges(rgs);
       assertNotNull(sfr);
       assertNotNull(sfr.bloomFilterRanges());
       assertNotNull(sfr.dictionaryPageRanges());
-    }
-  }
-
-  // --------------------------------------------------------------------
-  // Tests: row mask
-  // --------------------------------------------------------------------
-
-  @Test
-  void testBuildAllTrueRowMask(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    int rows = writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
-      int[] rgs = reader.allRowGroups();
-      try (ColumnVector mask = reader.buildAllTrueRowMask(rgs)) {
-        assertEquals(DType.BOOL8, mask.getType());
-        assertEquals(rows, mask.getRowCount());
-      }
     }
   }
 
@@ -318,7 +297,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
+             optsForColumns("id", "zip_code", "num_units"), null)) {
       int[] rgs = reader.allRowGroups();
       ByteRange[] ranges = reader.payloadColumnChunksByteRanges(rgs);
       assertNotNull(ranges);
@@ -330,20 +309,20 @@ public class HybridScanReaderTest extends CudfTestBase {
   void testFilterAndPayloadByteRangeSplit(@TempDir Path tmp) throws IOException {
     File pq = tmp.resolve("fixture.parquet").toFile();
     writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip");
+    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
     Literal lit = Literal.ofInt(50000);
     BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          CompiledExpression filter = expr.compile();
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), filter)) {
+             optsForColumns("id", "zip_code", "num_units"), filter)) {
       int[] rgs = reader.allRowGroups();
       ByteRange[] filterRanges = reader.filterColumnChunksByteRanges(rgs);
       ByteRange[] payloadRanges = reader.payloadColumnChunksByteRanges(rgs);
       assertNotNull(filterRanges);
       assertNotNull(payloadRanges);
-      // With one filter column ("zip") and two payload columns ("id", "num_units"), the
+      // With one filter column ("zip_code") and two payload columns ("id", "num_units"), the
       // filter ranges should equal one chunk per row group and payload ranges two per group.
       assertEquals(rgs.length, filterRanges.length);
       assertEquals(rgs.length * 2, payloadRanges.length);
@@ -358,14 +337,14 @@ public class HybridScanReaderTest extends CudfTestBase {
   void testExplicitTwoStepFlow(@TempDir Path tmp) throws IOException {
     File pq = tmp.resolve("fixture.parquet").toFile();
     writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip");
+    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
     Literal lit = Literal.ofInt(50000);
     BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          CompiledExpression filter = expr.compile();
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), filter)) {
+             optsForColumns("id", "zip_code", "num_units"), filter)) {
       int[] rgs = reader.allRowGroups();
       int[] survived = reader.filterRowGroupsWithStats(rgs);
       if (survived.length == 0) {
@@ -374,16 +353,17 @@ public class HybridScanReaderTest extends CudfTestBase {
       }
       DeviceMemoryBuffer[] filterCols = null;
       DeviceMemoryBuffer[] payloadCols = null;
-      try (ColumnVector rowMask = reader.buildAllTrueRowMask(survived)) {
+      try {
         ByteRange[] filterRanges = reader.filterColumnChunksByteRanges(survived);
         ByteRange[] payloadRanges = reader.payloadColumnChunksByteRanges(survived);
         filterCols = copyRangesToDevice(file, filterRanges);
         payloadCols = copyRangesToDevice(file, payloadRanges);
-        try (Table filtered = reader.materializeFilterColumns(survived, filterCols, rowMask,
-                 UseDataPageMask.NO);
-             Table payload = reader.materializePayloadColumns(survived, payloadCols, rowMask,
-                 UseDataPageMask.NO)) {
-          assertEquals(filtered.getRowCount(), payload.getRowCount());
+        try (HybridScanReader.FilterMaterializationResult fr =
+                 reader.materializeFilterColumns(survived, filterCols, UseDataPageMask.NO,
+                     HybridScanReader.RowMaskKind.ALL_TRUE);
+             Table payload = reader.materializePayloadColumns(survived, payloadCols,
+                 fr.rowMask(), UseDataPageMask.NO)) {
+          assertEquals(fr.table().getRowCount(), payload.getRowCount());
         }
       } finally {
         closeAll(filterCols);
@@ -399,7 +379,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
+             optsForColumns("id", "zip_code", "num_units"), null)) {
       int[] rgs = reader.allRowGroups();
       ByteRange[] ranges = reader.allColumnChunksByteRanges(rgs);
       DeviceMemoryBuffer[] devs = copyRangesToDevice(file, ranges);
@@ -423,7 +403,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
+             optsForColumns("id", "zip_code", "num_units"), null)) {
       int[] all = reader.allRowGroups();
       int[][] passes = reader.constructRowGroupPasses(all, 0L);
       assertNotNull(passes);
@@ -449,7 +429,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null)) {
+             optsForColumns("id", "zip_code", "num_units"), null)) {
       int[] rgs = reader.allRowGroups();
       ByteRange[] ranges = reader.allColumnChunksByteRanges(rgs);
       DeviceMemoryBuffer[] devs = copyRangesToDevice(file, ranges);
@@ -483,7 +463,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null);
+             optsForColumns("id", "zip_code", "num_units"), null);
          Table table = reader.materializeFromBuffer(file)) {
       assertEquals(3, table.getNumberOfColumns());
       assertEquals(rows, table.getRowCount());
@@ -497,10 +477,10 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip", "num_units"), null);
+             optsForColumns("id", "zip_code", "num_units"), null);
          Table hybrid = reader.materializeFromBuffer(file);
          Table standard = Table.readParquet(
-             optsForColumns("id", "zip", "num_units"), pq)) {
+             optsForColumns("id", "zip_code", "num_units"), pq)) {
       assertEquals(standard.getNumberOfColumns(), hybrid.getNumberOfColumns());
       assertEquals(standard.getRowCount(), hybrid.getRowCount());
       for (int i = 0; i < standard.getNumberOfColumns(); i++) {
@@ -516,7 +496,7 @@ public class HybridScanReaderTest extends CudfTestBase {
 
   @Test
   void testAstColumnNameReferenceCompilesAndCloses() {
-    ColumnNameReference c = new ColumnNameReference("zip");
+    ColumnNameReference c = new ColumnNameReference("zip_code");
     Literal v = Literal.ofInt(100);
     BinaryOperation e = new BinaryOperation(BinaryOperator.GREATER, c, v);
     // Compile + close should not throw; verifies the JNI deserializer accepts
@@ -545,7 +525,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file)) {
       HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip", "num_units"), null);
+          optsForColumns("id", "zip_code", "num_units"), null);
       reader.close();
       reader.close();
     }
@@ -558,7 +538,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file)) {
       HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip", "num_units"), null);
+          optsForColumns("id", "zip_code", "num_units"), null);
       reader.close();
       assertThrows(IllegalStateException.class, reader::allRowGroups);
     }

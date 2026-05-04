@@ -48,7 +48,11 @@ public final class HybridScanIoExample {
   public static void main(String[] args) throws IOException {
     if (args.length < 3) {
       System.err.println(
-          "Usage: HybridScanIoExample <parquet-file> <column-name> <int-literal>");
+          "Usage: HybridScanIoExample <parquet-file> <column-name> <int-literal>\n" +
+          "  parquet-file   Path to a Parquet file" +
+              " (use GenerateSampleParquetFileMain to create one)\n" +
+          "  column-name    Name of an integer column to filter on (e.g. zip_code)\n" +
+          "  int-literal    Integer threshold; rows where column-name > int-literal are kept");
       System.exit(1);
     }
     File path = new File(args[0]);
@@ -75,29 +79,30 @@ public final class HybridScanIoExample {
         //   * "filter columns"  — columns referenced by the filter expression
         //   * "payload columns" — projected columns that are NOT in the filter
         // To exercise both materialize calls, we include all columns from the fixture
-        // (`id`, `zip`, `num_units`); the filter column is `zip`, leaving `id` and
+        // (`id`, `zip_code`, `num_units`); the filter column is `zip_code`, leaving `id` and
         // `num_units` as the payload set. Adjust this if you point the example at
         // a different file.
         ParquetOptions readOpts = ParquetOptions.builder()
             .includeColumn("id")
-            .includeColumn("zip")
+            .includeColumn("zip_code")
             .includeColumn("num_units")
             .build();
 
-        // 1) Legacy reader path
+        // 1) Legacy reader path (with filter pushdown for stats-based row-group pruning)
         long legacyRows;
         long t0 = System.nanoTime();
-        try (Table legacyTable = Table.readParquet(readOpts, path)) {
-          legacyRows = legacyTable.getRowCount();
+        try (Table legacyTable = Table.readParquet(readOpts, path, filter);
+             ColumnVector mask = filter.computeColumn(legacyTable);
+             Table filtered = legacyTable.filter(mask)) {
+          legacyRows = filtered.getRowCount();
         }
         long legacyMs = (System.nanoTime() - t0) / 1_000_000L;
         System.out.printf("Legacy parquet reader: rows=%d time_ms=%d%n", legacyRows, legacyMs);
 
-        // 2) Hybrid scan two-step
-        try (HostMemoryBuffer file = Util.readFileToHostBuffer(path);
-             HostMemoryBuffer footer = Util.extractFooter(file);
+        // 2) Hybrid scan two-step (timer includes footer read and all I/O)
+        long t1 = System.nanoTime();
+        try (HostMemoryBuffer footer = Util.readFooterOnly(path);
              HybridScanReader reader = new HybridScanReader(footer, readOpts, filter)) {
-          long t1 = System.nanoTime();
           int[] all = reader.allRowGroups();
           int[] survived = reader.filterRowGroupsWithStats(all);
           System.out.printf("Hybrid scan: all_row_groups=%d after_stats=%d%n",
@@ -108,22 +113,24 @@ public final class HybridScanIoExample {
             return;
           }
 
+          ByteRange[] filterRanges = reader.filterColumnChunksByteRanges(survived);
+          ByteRange[] payloadRanges = reader.payloadColumnChunksByteRanges(survived);
+
           DeviceMemoryBuffer[] filterCols = null;
           DeviceMemoryBuffer[] payloadCols = null;
           long hybridRows;
-          try (ColumnVector rowMask = reader.buildAllTrueRowMask(survived)) {
-            ByteRange[] filterRanges = reader.filterColumnChunksByteRanges(survived);
-            ByteRange[] payloadRanges = reader.payloadColumnChunksByteRanges(survived);
+          try (HostMemoryBuffer file = Util.readFileToHostBuffer(path)) {
             filterCols = Util.copyRangesToDevice(file, filterRanges);
             payloadCols = Util.copyRangesToDevice(file, payloadRanges);
-            try (Table fTable = reader.materializeFilterColumns(survived, filterCols, rowMask,
-                     UseDataPageMask.NO);
-                 Table pTable = reader.materializePayloadColumns(survived, payloadCols, rowMask,
-                     UseDataPageMask.NO)) {
-              hybridRows = pTable.getRowCount();
-              System.out.printf("Hybrid scan two-step: filter_rows=%d payload_rows=%d%n",
-                  fTable.getRowCount(), hybridRows);
-            }
+          }
+          try (HybridScanReader.FilterMaterializationResult fr =
+                   reader.materializeFilterColumns(survived, filterCols, UseDataPageMask.NO,
+                       HybridScanReader.RowMaskKind.ALL_TRUE);
+               Table pTable = reader.materializePayloadColumns(survived, payloadCols,
+                   fr.rowMask(), UseDataPageMask.NO)) {
+            hybridRows = pTable.getRowCount();
+            System.out.printf("Hybrid scan two-step: filter_rows=%d payload_rows=%d%n",
+                fr.table().getRowCount(), hybridRows);
           } finally {
             Util.closeAll(filterCols);
             Util.closeAll(payloadCols);

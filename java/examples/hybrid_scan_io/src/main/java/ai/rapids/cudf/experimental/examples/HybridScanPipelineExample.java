@@ -39,11 +39,24 @@ public final class HybridScanPipelineExample {
   public static void main(String[] args) throws IOException {
     if (args.length < 1) {
       System.err.println(
-          "Usage: HybridScanPipelineExample <parquet-file> [pass-bytes [chunk-bytes]]");
+          "Usage: HybridScanPipelineExample <parquet-file> [row-group-batch-bytes [chunk-bytes]]\n" +
+          "  parquet-file          Path to a Parquet file" +
+              " (use GenerateSampleParquetFileMain to create one)\n" +
+          "  row-group-batch-bytes Row group batch size in bytes: maximum total uncompressed size\n" +
+          "                        of the row groups in a single pass (batch). A pass is a batch\n" +
+          "                        of row groups whose combined uncompressed size fits within this\n" +
+          "                        limit. 0 = no limit (all row groups in one pass).\n" +
+          "  chunk-bytes           Maximum size in bytes of a single output cuDF Table chunk\n" +
+          "                        within a pass. Controls how much decoded GPU memory is used\n" +
+          "                        at once per chunk. 0 = no limit (entire pass as one Table).");
       System.exit(1);
     }
     File path = new File(args[0]);
-    long passReadLimit = (args.length >= 2) ? Long.parseLong(args[1]) : 0L;
+    // Row group batch size in bytes: caps the total uncompressed size of row groups
+    // processed in a single pass (batch). 0 = no limit.
+    long passReadLimit  = (args.length >= 2) ? Long.parseLong(args[1]) : 0L;
+    // Maximum size in bytes of a single output cuDF Table chunk within a pass.
+    // Controls how much decoded GPU table memory is used at once. 0 = no limit.
     long chunkReadLimit = (args.length >= 3) ? Long.parseLong(args[2]) : 0L;
 
     if (!path.isFile()) {
@@ -60,20 +73,40 @@ public final class HybridScanPipelineExample {
            HostMemoryBuffer footer = Util.extractFooter(file);
            HybridScanReader reader = new HybridScanReader(footer, ParquetOptions.DEFAULT, null)) {
         int[] allRowGroups = reader.allRowGroups();
+        // Partition row groups into passes (batches) so each pass's total uncompressed
+        // size stays within the row group batch size in bytes (passReadLimit).
         int[][] passes = reader.constructRowGroupPasses(allRowGroups, passReadLimit);
         System.out.printf("Split %d row groups into %d pass(es)%n",
             allRowGroups.length, passes.length);
 
         long totalRows = 0;
         long t0 = System.nanoTime();
+        // Each pass is a batch of row groups. Within a pass, materialise in chunks
+        // of at most chunkReadLimit decoded bytes.
         for (int p = 0; p < passes.length; p++) {
           int[] pass = passes[p];
+          // Ask the reader which byte ranges in the file hold the column chunks for
+          // this pass's row groups. Each ByteRange is a (offset, size) pair pointing
+          // into the raw Parquet file bytes — no data has been read to the GPU yet.
           ByteRange[] ranges = reader.allColumnChunksByteRanges(pass);
+          // Copy only the needed byte ranges from host memory to GPU device memory.
+          // One DeviceMemoryBuffer is allocated per range; together they hold the
+          // compressed column chunk data for every column in this pass.
           DeviceMemoryBuffer[] devs = Util.copyRangesToDevice(file, ranges);
           try {
+            // Register the compressed column chunk data with the reader and set up
+            // the chunking state. The reader decompresses and decodes page headers
+            // but does not yet produce any output rows. chunkReadLimit caps the size
+            // in bytes of each output cuDF Table chunk (i.e. how much decoded GPU
+            // table memory is used at once); passReadLimit is the row group batch
+            // size in bytes used to bound GPU memory for this pass.
             reader.setupChunkingForAllColumns(chunkReadLimit, passReadLimit, pass, devs);
             int chunks = 0;
             long passRows = 0;
+            // Drain the reader one output chunk at a time. Each call to
+            // materializeAllColumnsChunk() decodes the next slice of pages into a
+            // Table and returns it. The loop ends when all pages in this pass have
+            // been decoded.
             while (reader.hasNextTableChunk()) {
               try (Table chunk = reader.materializeAllColumnsChunk()) {
                 passRows += chunk.getRowCount();

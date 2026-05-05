@@ -415,39 +415,63 @@ public class HybridScanReader implements AutoCloseable {
   // ----------------------------------------------------------------------
 
   /**
-   * Build a row mask according to {@code kind}, set up chunking state for filter-column
-   * materialization, and return the owned row mask. Subsequent calls to
-   * {@link #materializeFilterColumnsChunk(ColumnVector)} will yield successive chunks; thread
-   * the returned {@link ColumnVector} into each call and close it when done.
+   * Build a row mask according to {@code kind} and set up chunking state for filter-column
+   * materialization. The row mask is owned internally by the reader for the duration of
+   * the chunked filter pipeline; subsequent calls to {@link #materializeFilterColumnsChunk()}
+   * mutate it in place. After all chunks are drained, call {@link #takeFilterRowMask()} to
+   * transfer ownership of the row mask to the caller (typically to feed it into
+   * {@link #materializePayloadColumns(int[], DeviceMemoryBuffer[], ColumnVector, UseDataPageMask)}).
+   *
+   * <p>Calling this method again before {@link #takeFilterRowMask()} discards the previous
+   * chunked-filter row mask.
    *
    * @param chunkReadLimit  per-chunk byte limit, or 0 for no limit
    * @param passReadLimit   per-pass byte limit, or 0 for no limit
    * @param kind            how to initialise the row mask
-   * @return the owned row mask {@link ColumnVector}; caller must close it
    */
-  public ColumnVector setupChunkingForFilterColumns(long chunkReadLimit,
-                                                    long passReadLimit,
-                                                    int[] rowGroupIndices,
-                                                    UseDataPageMask mode,
-                                                    RowMaskKind kind,
-                                                    DeviceMemoryBuffer[] columnChunkData) {
+  public void setupChunkingForFilterColumns(long chunkReadLimit,
+                                            long passReadLimit,
+                                            int[] rowGroupIndices,
+                                            UseDataPageMask mode,
+                                            RowMaskKind kind,
+                                            DeviceMemoryBuffer[] columnChunkData) {
     assertNotClosed();
     requireNonNullRowGroups(rowGroupIndices);
     long[] addrs = bufferAddrs(columnChunkData);
     long[] lens = bufferLens(columnChunkData);
     boolean allTrue = (kind == RowMaskKind.ALL_TRUE);
-    long rowMaskHandle = setupChunkingForFilterColumnsWithKind(cleaner.nativeHandle,
-        chunkReadLimit, passReadLimit, rowGroupIndices, mode.getNativeValue(), allTrue, addrs, lens);
-    return new ColumnVector(rowMaskHandle);
+    setupChunkingForFilterColumnsWithKind(cleaner.nativeHandle,
+        chunkReadLimit, passReadLimit, rowGroupIndices, mode.getNativeValue(), allTrue,
+        addrs, lens);
   }
 
-  /** @return the next filter-column chunk; throws if no chunk is available. */
-  public Table materializeFilterColumnsChunk(ColumnVector rowMask) {
+  /**
+   * @return the next filter-column chunk; throws if no chunk is available or if no chunked
+   *         filter pipeline is active. The internal row mask owned by this reader is
+   *         updated in place.
+   */
+  public Table materializeFilterColumnsChunk() {
     assertNotClosed();
-    requireNonNullRowMask(rowMask);
-    long[] handles = materializeFilterColumnsChunk(cleaner.nativeHandle,
-        rowMask.getNativeColumnHandle());
+    long[] handles = materializeFilterColumnsChunk(cleaner.nativeHandle);
     return new Table(handles);
+  }
+
+  /**
+   * Transfer ownership of the row mask produced by the chunked filter-column materialization
+   * to the caller. Typically called after all {@link #materializeFilterColumnsChunk()} calls
+   * complete and immediately before
+   * {@link #materializePayloadColumns(int[], DeviceMemoryBuffer[], ColumnVector, UseDataPageMask)}.
+   *
+   * <p>After this call the reader has no chunked-filter row mask; subsequent
+   * {@link #materializeFilterColumnsChunk()} calls will fail until
+   * {@link #setupChunkingForFilterColumns(long, long, int[], UseDataPageMask, RowMaskKind, DeviceMemoryBuffer[])}
+   * is invoked again. If never called, the row mask is freed when the reader is closed.
+   *
+   * @return the owned row mask {@link ColumnVector}; caller must close it.
+   */
+  public ColumnVector takeFilterRowMask() {
+    assertNotClosed();
+    return new ColumnVector(takeFilterRowMask(cleaner.nativeHandle));
   }
 
   /**
@@ -680,8 +704,10 @@ public class HybridScanReader implements AutoCloseable {
                                                      long[] bufferLengths);
 
   // Chunked
-  // Returns owned row mask column handle; caller threads it into materializeFilterColumnsChunk
-  private static native long setupChunkingForFilterColumnsWithKind(long handle,
+  // Builds the row mask, sets up chunking state, and stores the owned row mask column on
+  // the C++ wrapper. Subsequent materializeFilterColumnsChunk calls mutate that column in
+  // place; takeFilterRowMask transfers it out to Java.
+  private static native void setupChunkingForFilterColumnsWithKind(long handle,
                                                                    long chunkReadLimit,
                                                                    long passReadLimit,
                                                                    int[] rowGroupIndices,
@@ -689,8 +715,8 @@ public class HybridScanReader implements AutoCloseable {
                                                                    boolean allTrue,
                                                                    long[] bufferAddresses,
                                                                    long[] bufferLengths);
-  private static native long[] materializeFilterColumnsChunk(long handle,
-                                                             long rowMaskColumnHandle);
+  private static native long[] materializeFilterColumnsChunk(long handle);
+  private static native long takeFilterRowMask(long handle);
   private static native void setupChunkingForPayloadColumns(long handle,
                                                             long chunkReadLimit,
                                                             long passReadLimit,

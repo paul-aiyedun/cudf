@@ -322,20 +322,6 @@ public final class ColumnVector extends ColumnView {
   }
 
   /**
-   * USE WITH CAUTION: Returns the address of the native cudf::column owned by this vector,
-   * or 0 if this vector does not own a cudf::column (e.g. it was constructed from existing
-   * device buffers + a column_view).
-   *
-   * <p>This is intended for use by experimental cudf APIs (such as the Parquet hybrid scan
-   * reader) that need a {@code mutable_column_view} of an existing column. Do not modify the
-   * column in any way that would invalidate the view, and do not close this vector while the
-   * native code still references the column.
-   */
-  public final long getNativeColumnHandle() {
-    return offHeap.getNativeColumnHandle();
-  }
-
-  /**
    * Returns if the vector has a validity vector allocated or not.
    */
   public boolean hasValidityVector() {
@@ -1021,14 +1007,6 @@ public final class ColumnVector extends ColumnView {
         viewHandle = ColumnVector.getNativeColumnView(columnHandle);
       }
       return viewHandle;
-    }
-
-    /**
-     * @return the address of the underlying cudf::column, or 0 if this column does not own
-     *         a cudf::column (e.g. it was constructed from device buffers + a view handle).
-     */
-    public long getNativeColumnHandle() {
-      return columnHandle;
     }
 
     public long getNativeNullCount() {

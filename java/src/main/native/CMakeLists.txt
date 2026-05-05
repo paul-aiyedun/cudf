@@ -165,6 +165,8 @@ add_library(
   src/HashJoinJni.cpp
   src/HostMemoryBufferNativeUtilsJni.cpp
   src/HybridScanReaderJni.cpp
+  src/HybridScanReaderJniInternal.cpp
+  src/HybridScanReaderJniMaterialize.cpp
   src/KeyRemappingJni.cpp
   src/HostUDFWrapperJni.cpp
   src/NvcompJni.cpp

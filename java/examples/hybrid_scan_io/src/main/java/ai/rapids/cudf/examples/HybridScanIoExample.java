@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.rapids.cudf.experimental.examples;
+package ai.rapids.cudf.examples;
 
 import ai.rapids.cudf.ColumnVector;
 import ai.rapids.cudf.DeviceMemoryBuffer;
@@ -14,7 +14,7 @@ import ai.rapids.cudf.RmmAllocationMode;
 import ai.rapids.cudf.Table;
 import ai.rapids.cudf.ast.BinaryOperation;
 import ai.rapids.cudf.ast.BinaryOperator;
-import ai.rapids.cudf.ast.ColumnNameReference;
+import ai.rapids.cudf.ast.ColumnReference;
 import ai.rapids.cudf.ast.CompiledExpression;
 import ai.rapids.cudf.ast.Literal;
 import ai.rapids.cudf.experimental.ByteRange;
@@ -38,7 +38,7 @@ import java.io.IOException;
  * <p>Usage:
  * <pre>
  * mvn -pl java/examples/hybrid_scan_io exec:java \
- *     -Dexec.mainClass=ai.rapids.cudf.experimental.examples.HybridScanIoExample \
+ *     -Dexec.mainClass=ai.rapids.cudf.examples.HybridScanIoExample \
  *     -Dexec.args="/path/to/file.parquet col_name int_value"
  * </pre>
  */
@@ -64,13 +64,25 @@ public final class HybridScanIoExample {
       System.exit(2);
     }
 
+    // Projected columns, in the order they will appear in every materialised Table.
+    // We use this list both to build the ParquetOptions and to translate the
+    // user-supplied column NAME into a column INDEX for the AST filter (libcudf's
+    // general AST expression parser only accepts ColumnReference, not
+    // ColumnNameReference -- the latter is a hybrid-scan-reader extension).
+    java.util.List<String> projected = java.util.Arrays.asList("id", "zip_code", "num_units");
+    int columnIndex = projected.indexOf(columnName);
+    if (columnIndex < 0) {
+      System.err.println("Column must be one of " + projected + ", got: " + columnName);
+      System.exit(3);
+    }
+
     try {
       if (!Rmm.isInitialized()) {
-        Rmm.initialize(RmmAllocationMode.POOL, Rmm.logToStderr(), 512L * 1024L * 1024L);
+        Rmm.initialize(RmmAllocationMode.POOL, null, 512L * 1024L * 1024L);
       }
 
-      // Filter expression: <column-name> > <int-literal>
-      ColumnNameReference colRef = new ColumnNameReference(columnName);
+      // Filter expression: <column-at-columnIndex> > <int-literal>.
+      ColumnReference colRef = new ColumnReference(columnIndex);
       Literal lit = Literal.ofInt(literalValue);
       BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, colRef, lit);
 
@@ -82,16 +94,20 @@ public final class HybridScanIoExample {
         // (`id`, `zip_code`, `num_units`); the filter column is `zip_code`, leaving `id` and
         // `num_units` as the payload set. Adjust this if you point the example at
         // a different file.
-        ParquetOptions readOpts = ParquetOptions.builder()
-            .includeColumn("id")
-            .includeColumn("zip_code")
-            .includeColumn("num_units")
-            .build();
+        ParquetOptions.Builder optsBuilder = ParquetOptions.builder();
+        for (String col : projected) {
+          optsBuilder.includeColumn(col);
+        }
+        ParquetOptions readOpts = optsBuilder.build();
 
-        // 1) Legacy reader path (with filter pushdown for stats-based row-group pruning)
+        // 1) Legacy reader path: read all projected columns then apply the filter on
+        //    the result. We deliberately do NOT push the filter into Table.readParquet
+        //    -- the legacy reader's row-group pruning is not exercised here. The hybrid
+        //    path below still benefits from row-group pruning via
+        //    filterRowGroupsWithStats, so the comparison remains representative.
         long legacyRows;
         long t0 = System.nanoTime();
-        try (Table legacyTable = Table.readParquet(readOpts, path, filter);
+        try (Table legacyTable = Table.readParquet(readOpts, path);
              ColumnVector mask = filter.computeColumn(legacyTable);
              Table filtered = legacyTable.filter(mask)) {
           legacyRows = filtered.getRowCount();

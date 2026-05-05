@@ -37,13 +37,32 @@ the examples:
 ```bash
 # Generate the sample Parquet file used by the examples
 mvn exec:java \
-  -Dexec.mainClass=ai.rapids.cudf.experimental.examples.GenerateSampleParquetFileMain \
+  -Dexec.mainClass=ai.rapids.cudf.examples.GenerateSampleParquetFileMain \
   -Dexec.args="/tmp/sample.parquet"
 ```
 
 ## Running
 
-After `mvn package` has been run on the examples module:
+The fastest way to exercise all three examples is the bundled `run_examples.sh`:
+
+```bash
+./run_examples.sh                # data-gen + io + pipeline
+./run_examples.sh -b             # also force `mvn package -DskipTests` first
+./run_examples.sh --help         # full usage
+```
+
+`run_examples.sh`:
+
+- Prechecks that the `ai.rapids:cudf` jar is installed in `~/.m2/repository`
+  and prints a clear error (with the `mvn install -DskipTests` invocation)
+  if it isn't.
+- Auto-builds the example module on first run when
+  `target/classes/ai/rapids/cudf/examples/` has no `*.class` files.
+- Accepts `-b` / `--build` to force a rebuild even when classes are already
+  present.
+
+To run a single example by hand (after `mvn package` has been run on the
+examples module):
 
 ```bash
 # Single/two-step example
@@ -52,7 +71,7 @@ After `mvn package` has been run on the examples module:
 #   column-name    Name of an integer column to filter on (e.g. zip_code)
 #   int-literal    Integer threshold; rows where column-name > int-literal are kept
 mvn exec:java \
-  -Dexec.mainClass=ai.rapids.cudf.experimental.examples.HybridScanIoExample \
+  -Dexec.mainClass=ai.rapids.cudf.examples.HybridScanIoExample \
   -Dexec.args="/tmp/sample.parquet zip_code 150000"
 
 # Chunked pipeline example
@@ -66,7 +85,7 @@ mvn exec:java \
 #                         Controls how much decoded GPU memory is used at once per chunk.
 #                         0 = no limit (entire pass materialised as one Table).
 mvn exec:java \
-  -Dexec.mainClass=ai.rapids.cudf.experimental.examples.HybridScanPipelineExample \
+  -Dexec.mainClass=ai.rapids.cudf.examples.HybridScanPipelineExample \
   -Dexec.args="/tmp/sample.parquet 67108864 16777216"
 ```
 

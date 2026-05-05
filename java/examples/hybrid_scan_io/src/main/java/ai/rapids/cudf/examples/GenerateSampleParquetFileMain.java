@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.rapids.cudf.experimental.examples;
+package ai.rapids.cudf.examples;
 
 import ai.rapids.cudf.ColumnVector;
 import ai.rapids.cudf.ParquetWriterOptions;
@@ -26,7 +26,7 @@ import java.util.stream.IntStream;
  * <p>Usage:
  * <pre>
  * mvn -pl java/examples/hybrid_scan_io exec:java \
- *     -Dexec.mainClass=ai.rapids.cudf.experimental.examples.GenerateSampleParquetFileMain \
+ *     -Dexec.mainClass=ai.rapids.cudf.examples.GenerateSampleParquetFileMain \
  *     -Dexec.args="/tmp/sample.parquet"
  * </pre>
  */
@@ -52,7 +52,7 @@ public final class GenerateSampleParquetFileMain {
     boolean isRmmInitializedByApp = false;
     try {
       if (!Rmm.isInitialized()) {
-        Rmm.initialize(RmmAllocationMode.POOL, Rmm.logToStderr(), 256L * 1024L * 1024L);
+        Rmm.initialize(RmmAllocationMode.POOL, null, 256L * 1024L * 1024L);
         isRmmInitializedByApp = true;
       }
 

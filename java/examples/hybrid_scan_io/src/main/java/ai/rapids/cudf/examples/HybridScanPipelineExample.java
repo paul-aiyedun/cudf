@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.rapids.cudf.experimental.examples;
+package ai.rapids.cudf.examples;
 
 import ai.rapids.cudf.DeviceMemoryBuffer;
 import ai.rapids.cudf.HostMemoryBuffer;
@@ -27,7 +27,7 @@ import java.io.IOException;
  * <p>Usage:
  * <pre>
  * mvn -pl java/examples/hybrid_scan_io exec:java \
- *     -Dexec.mainClass=ai.rapids.cudf.experimental.examples.HybridScanPipelineExample \
+ *     -Dexec.mainClass=ai.rapids.cudf.examples.HybridScanPipelineExample \
  *     -Dexec.args="/path/to/file.parquet [pass-bytes [chunk-bytes]]"
  * </pre>
  *
@@ -66,7 +66,7 @@ public final class HybridScanPipelineExample {
 
     try {
       if (!Rmm.isInitialized()) {
-        Rmm.initialize(RmmAllocationMode.POOL, Rmm.logToStderr(), 512L * 1024L * 1024L);
+        Rmm.initialize(RmmAllocationMode.POOL, null, 512L * 1024L * 1024L);
       }
 
       try (HostMemoryBuffer file = Util.readFileToHostBuffer(path);

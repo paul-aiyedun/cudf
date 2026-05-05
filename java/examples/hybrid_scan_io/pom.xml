@@ -65,10 +65,10 @@
                      Maven plugin XML literals take precedence over user properties.
                      Examples:
                        mvn exec:java \
-                         -Dexec.mainClass=ai.rapids.cudf.experimental.examples.HybridScanIoExample \
+                         -Dexec.mainClass=ai.rapids.cudf.examples.HybridScanIoExample \
                          -Dexec.args="/path/to/file.parquet zip 50000"
                        mvn exec:java \
-                         -Dexec.mainClass=ai.rapids.cudf.experimental.examples.HybridScanPipelineExample \
+                         -Dexec.mainClass=ai.rapids.cudf.examples.HybridScanPipelineExample \
                          -Dexec.args="/path/to/file.parquet 0 0"
                 -->
             </plugin>

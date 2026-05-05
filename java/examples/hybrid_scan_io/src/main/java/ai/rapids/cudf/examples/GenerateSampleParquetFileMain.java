@@ -52,6 +52,7 @@ public final class GenerateSampleParquetFileMain {
     boolean isRmmInitializedByApp = false;
     try {
       if (!Rmm.isInitialized()) {
+        System.out.println("[Generate] Initialising RMM (256 MB POOL)...");
         Rmm.initialize(RmmAllocationMode.POOL, null, 256L * 1024L * 1024L);
         isRmmInitializedByApp = true;
       }
@@ -62,6 +63,9 @@ public final class GenerateSampleParquetFileMain {
           .withStatisticsFrequency(ParquetWriterOptions.StatisticsFrequency.PAGE)
           .build();
 
+      System.out.printf(
+          "[Generate] Writing %d row groups of %d rows each (PAGE-level statistics)...%n",
+          numGroups, rowsPerGroup);
       try (TableWriter writer = Table.writeParquetChunked(opts, out)) {
         for (int g = 0; g < numGroups; g++) {
           int start = g * rowsPerGroup;
@@ -78,7 +82,7 @@ public final class GenerateSampleParquetFileMain {
           }
         }
       }
-      System.out.printf("Wrote %s (%d rows in %d row groups)%n", out, totalRows, numGroups);
+      System.out.printf("[Generate] Wrote %d rows to %s.%n", totalRows, out);
     } finally {
       if (isRmmInitializedByApp && Rmm.isInitialized()) {
         Rmm.shutdown();

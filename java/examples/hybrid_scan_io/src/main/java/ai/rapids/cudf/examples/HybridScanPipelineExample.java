@@ -69,15 +69,20 @@ public final class HybridScanPipelineExample {
         Rmm.initialize(RmmAllocationMode.POOL, null, 512L * 1024L * 1024L);
       }
 
+      System.out.println("[Pipeline] Loading file into host buffer; slicing footer.");
       try (HostMemoryBuffer file = Util.readFileToHostBuffer(path);
            HostMemoryBuffer footer = Util.extractFooter(file);
            HybridScanReader reader = new HybridScanReader(footer, ParquetOptions.DEFAULT, null)) {
         int[] allRowGroups = reader.allRowGroups();
+        System.out.printf(
+            "[Pipeline] Opened HybridScanReader on %d row group(s) (no filter; full read).%n",
+            allRowGroups.length);
         // Partition row groups into passes (batches) so each pass's total uncompressed
         // size stays within the row group batch size in bytes (passReadLimit).
         int[][] passes = reader.constructRowGroupPasses(allRowGroups, passReadLimit);
-        System.out.printf("Split %d row groups into %d pass(es)%n",
-            allRowGroups.length, passes.length);
+        System.out.printf(
+            "[Pipeline] Splitting %d row group(s) into %d pass(es) (pass-byte-budget=%d).%n",
+            allRowGroups.length, passes.length, passReadLimit);
 
         long totalRows = 0;
         long t0 = System.nanoTime();
@@ -89,6 +94,9 @@ public final class HybridScanPipelineExample {
           // this pass's row groups. Each ByteRange is a (offset, size) pair pointing
           // into the raw Parquet file bytes — no data has been read to the GPU yet.
           ByteRange[] ranges = reader.allColumnChunksByteRanges(pass);
+          System.out.printf(
+              "[Pipeline] Pass %d: copying %d byte range(s) to device; draining chunks...%n",
+              p, ranges.length);
           // Copy only the needed byte ranges from host memory to GPU device memory.
           // One DeviceMemoryBuffer is allocated per range; together they hold the
           // compressed column chunk data for every column in this pass.
@@ -114,14 +122,17 @@ public final class HybridScanPipelineExample {
               }
             }
             totalRows += passRows;
-            System.out.printf("  pass %d: row_groups=%d chunks=%d rows=%d%n",
+            System.out.printf(
+                "[Pipeline]   pass %d: %d row group(s) -> %d chunk(s), %d row(s).%n",
                 p, pass.length, chunks, passRows);
           } finally {
             Util.closeAll(devs);
           }
         }
         long ms = (System.nanoTime() - t0) / 1_000_000L;
-        System.out.printf("Pipeline read: total_rows=%d time_ms=%d%n", totalRows, ms);
+        System.out.printf("[Pipeline] Total: %d row(s) across %d pass(es).%n",
+            totalRows, passes.length);
+        System.out.printf("[Pipeline] Processing time: %d ms.%n", ms);
       }
     } finally {
       if (Rmm.isInitialized()) {

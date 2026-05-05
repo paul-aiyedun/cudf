@@ -105,32 +105,55 @@ public final class HybridScanIoExample {
         //    -- the legacy reader's row-group pruning is not exercised here. The hybrid
         //    path below still benefits from row-group pruning via
         //    filterRowGroupsWithStats, so the comparison remains representative.
+        System.out.println(
+            "[Legacy] Reading entire file via Table.readParquet (no filter pushdown)...");
         long legacyRows;
+        long legacyTotal;
         long t0 = System.nanoTime();
         try (Table legacyTable = Table.readParquet(readOpts, path);
              ColumnVector mask = filter.computeColumn(legacyTable);
              Table filtered = legacyTable.filter(mask)) {
+          legacyTotal = legacyTable.getRowCount();
           legacyRows = filtered.getRowCount();
         }
         long legacyMs = (System.nanoTime() - t0) / 1_000_000L;
-        System.out.printf("Legacy parquet reader: rows=%d time_ms=%d%n", legacyRows, legacyMs);
+        System.out.printf("[Legacy] Applied filter '%s > %d' on materialised table.%n",
+            columnName, literalValue);
+        System.out.printf("[Legacy] %d / %d rows survive.%n",
+            legacyRows, legacyTotal);
+        System.out.printf("[Legacy] Processing time: %d ms.%n", legacyMs);
 
-        // 2) Hybrid scan two-step (timer includes footer read and all I/O)
+        System.out.println();
+
+        // 2) Hybrid scan two-step (timer includes footer read and all I/O). The "/ %d"
+        //    denominator below reuses legacyTotal -- the hybrid reader never materialises
+        //    rows pruned by row-group stats, so it has no equivalent unfiltered counter.
+        System.out.println("[Hybrid] Reading just the Parquet footer (no full-file IO)...");
         long t1 = System.nanoTime();
         try (HostMemoryBuffer footer = Util.readFooterOnly(path);
              HybridScanReader reader = new HybridScanReader(footer, readOpts, filter)) {
+          System.out.printf("[Hybrid] Opened HybridScanReader; footer is %d bytes.%n",
+              footer.getLength());
           int[] all = reader.allRowGroups();
           int[] survived = reader.filterRowGroupsWithStats(all);
-          System.out.printf("Hybrid scan: all_row_groups=%d after_stats=%d%n",
+          System.out.printf(
+              "[Hybrid] Stats-based row-group pruning: %d -> %d row groups survive.%n",
               all.length, survived.length);
 
           if (survived.length == 0) {
-            System.out.println("Filter pruned all row groups; nothing to read.");
+            System.out.println(
+                "[Hybrid] All row groups pruned by statistics; nothing to read.");
             return;
           }
 
           ByteRange[] filterRanges = reader.filterColumnChunksByteRanges(survived);
           ByteRange[] payloadRanges = reader.payloadColumnChunksByteRanges(survived);
+          System.out.printf(
+              "[Hybrid] Copying %d filter column byte range(s) (%s) to device.%n",
+              filterRanges.length, columnName);
+          System.out.printf(
+              "[Hybrid] Copying %d payload column byte range(s) to device.%n",
+              payloadRanges.length);
 
           DeviceMemoryBuffer[] filterCols = null;
           DeviceMemoryBuffer[] payloadCols = null;
@@ -145,14 +168,20 @@ public final class HybridScanIoExample {
                Table pTable = reader.materializePayloadColumns(survived, payloadCols,
                    fr.rowMask(), UseDataPageMask.NO)) {
             hybridRows = pTable.getRowCount();
-            System.out.printf("Hybrid scan two-step: filter_rows=%d payload_rows=%d%n",
-                fr.table().getRowCount(), hybridRows);
+            System.out.printf(
+                "[Hybrid] Materialised filter columns: %d rows survive %s > %d.%n",
+                fr.table().getRowCount(), columnName, literalValue);
+            System.out.printf(
+                "[Hybrid] Materialised payload columns aligned to row mask: %d rows.%n",
+                hybridRows);
           } finally {
             Util.closeAll(filterCols);
             Util.closeAll(payloadCols);
           }
           long hybridMs = (System.nanoTime() - t1) / 1_000_000L;
-          System.out.printf("Hybrid scan total: rows=%d time_ms=%d%n", hybridRows, hybridMs);
+          System.out.printf("[Hybrid] Total: %d / %d rows survive.%n",
+              hybridRows, legacyTotal);
+          System.out.printf("[Hybrid] Processing time: %d ms.%n", hybridMs);
         }
       }
     } finally {

@@ -18,8 +18,7 @@ import java.util.stream.IntStream;
 /**
  * Writes a small deterministic Parquet file that the other examples can consume.
  *
- * <p>Mirrors the helper used by {@code HybridScanReaderTest#writeFixtureParquet}: three
- * row groups of 1000 rows each with three int columns ({@code id}, {@code zip_code},
+ * <p>Three row groups of 1000 rows each with three int columns ({@code id}, {@code zip_code},
  * {@code num_units}) and PAGE-level statistics. Forcing multiple row groups makes the
  * file useful both for the two-step / filter-then-payload example and for the chunked
  * pipeline example.
@@ -36,7 +35,7 @@ public final class GenerateSampleParquetFileMain {
 
   public static void main(String[] args) {
     if (args.length < 1) {
-      System.err.println("Usage: GenerateSampleParquetFileMain <output-parquet-path>");
+      System.err.println("Usage: GenerateSampleParquetFileMain /output/parquet/file/path");
       System.exit(1);
     }
     File out = new File(args[0]);

@@ -6,7 +6,7 @@
 # examples, then cleans up.  Must be run from java/examples/hybrid_scan_io/
 # after the module has been packaged (mvn package).
 
-set -euo pipefail
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_FILE="${SCRIPT_DIR}/test_data.parquet"

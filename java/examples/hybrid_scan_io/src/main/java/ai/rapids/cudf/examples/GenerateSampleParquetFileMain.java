@@ -21,9 +21,9 @@ import java.util.stream.IntStream;
  * <p>Five row groups of 50,000 rows each with three int columns ({@code id}, {@code zip_code},
  * {@code num_units}) and COLUMN-level statistics (page index). The zip_code values are assigned
  * per-group from deliberate base offsets so that the filter threshold used by
- * {@link HybridScanIoExample} falls at predictable page boundaries — enabling 2 row groups to
- * be pruned entirely by row-group statistics and 2 others to have individual pages pruned by the
- * page index.
+ * {@link HybridScanIoExample} falls at predictable page boundaries — enabling 1 row group to
+ * be pruned entirely by row-group statistics, 2 others to have individual pages pruned by the
+ * page index, and 2 to survive without any pruning.
  *
  * <p>Usage:
  * <pre>
@@ -48,9 +48,9 @@ public final class GenerateSampleParquetFileMain {
     }
 
     // Row-group count and size are chosen to exercise two distinct pruning levels:
-    //   - 5 row groups with non-overlapping, deliberately placed value ranges: 2 groups
-    //     are pruned entirely by row-group statistics, 2 groups are partially pruned at
-    //     the page level (2 pages in one, 1 page in the other), and 1 group fully survives.
+    //   - 5 row groups with deliberately placed value ranges: 1 group is pruned
+    //     entirely by row-group statistics, 2 groups are partially pruned at the page
+    //     level (2 pages in one, 1 page in the other), and 2 groups fully survive.
     //   - 50,000 rows per group: cuDF's default max_page_size_rows is ~20,000 rows, so
     //     each column chunk splits into ~3 pages (20K + 20K + 10K rows), giving the
     //     page-index filter room to skip whole pages within partially-overlapping groups.
@@ -61,9 +61,9 @@ public final class GenerateSampleParquetFileMain {
     int totalRows    = rowsPerGroup * numGroups;
 
     // zip_code base values per group — each group gets its own contiguous sorted range so
-    // per-page min/max statistics are tight and the filter threshold (145,000) falls at a
-    // predictable page boundary within groups 2 and 3.
-    int[] zipBases = {0, 50_000, 100_000, 125_000, 200_000};
+    // per-page min/max statistics are tight and the filter threshold (145,000) falls at
+    // predictable page boundaries within groups 1 and 2.
+    int[] zipBases = {0, 100_000, 125_000, 175_000, 250_000};
 
     boolean isRmmInitializedByApp = false;
     try {

@@ -79,6 +79,27 @@ public final class Util {
   }
 
   /**
+   * Reads the bytes described by {@code range} directly from {@code file} into a
+   * new {@link HostMemoryBuffer}. Uses a single {@link RandomAccessFile} seek.
+   * Caller owns the returned buffer and must close it.
+   */
+  public static HostMemoryBuffer readByteRange(File file, ByteRange range) throws IOException {
+    try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+      byte[] bytes = new byte[(int) range.size()];
+      raf.seek(range.offset());
+      raf.readFully(bytes);
+      HostMemoryBuffer buf = HostMemoryBuffer.allocate(range.size());
+      try {
+        buf.setBytes(0, bytes, 0, bytes.length);
+        return buf;
+      } catch (RuntimeException e) {
+        buf.close();
+        throw e;
+      }
+    }
+  }
+
+  /**
    * Copy each {@link ByteRange} from a host buffer into its own {@link DeviceMemoryBuffer}.
    * Caller owns the returned buffers and must close them.
    */
@@ -91,6 +112,34 @@ public final class Util {
         DeviceMemoryBuffer dev = DeviceMemoryBuffer.allocate(r.size());
         try (HostMemoryBuffer slice = file.slice(r.offset(), r.size())) {
           dev.copyFromHostBuffer(slice);
+        }
+        out[i] = dev;
+      }
+      return out;
+    } catch (Throwable t) {
+      closeAll(out);
+      throw t;
+    }
+  }
+
+  /**
+   * Reads each {@link ByteRange} from {@code file} directly (one seek per range using a
+   * single open {@link RandomAccessFile}) and copies it into its own
+   * {@link DeviceMemoryBuffer}. Caller owns the returned buffers and must close them.
+   */
+  public static DeviceMemoryBuffer[] copyRangesToDevice(File file, ByteRange[] ranges)
+      throws IOException {
+    DeviceMemoryBuffer[] out = new DeviceMemoryBuffer[ranges.length];
+    try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+      for (int i = 0; i < ranges.length; i++) {
+        ByteRange r = ranges[i];
+        byte[] bytes = new byte[(int) r.size()];
+        raf.seek(r.offset());
+        raf.readFully(bytes);
+        DeviceMemoryBuffer dev = DeviceMemoryBuffer.allocate(r.size());
+        try (HostMemoryBuffer host = HostMemoryBuffer.allocate(r.size())) {
+          host.setBytes(0, bytes, 0, bytes.length);
+          dev.copyFromHostBuffer(host);
         }
         out[i] = dev;
       }

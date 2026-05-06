@@ -171,8 +171,8 @@ public final class HybridScanIoExample {
       int[] all = reader.allRowGroups();
       int[] survived = reader.filterRowGroupsWithStats(all);
       System.out.printf(
-          "[Hybrid] Stats-based row-group pruning: %d -> %d row groups survive.%n",
-          all.length, survived.length);
+          "[Hybrid] Stats-based row-group pruning: %d / %d row groups survive.%n",
+          survived.length, all.length);
 
       if (survived.length == 0) {
         System.out.println(
@@ -222,11 +222,9 @@ public final class HybridScanIoExample {
    * Scenario 3: hybrid scan two-step with a page-index-seeded row mask. Differs from
    * scenario 2 in two ways:
    * <ul>
-   *   <li>Reads the full file once up front and slices the footer + page index + chunk
-   *       byte ranges from the same buffer (the page-index variant needs page-index
-   *       bytes alongside chunks, so a footer-only pre-fetch would just defer the read).
-   *       The {@code [Hybrid]} timer above stays footer-first to keep that variant's
-   *       "skip the full file until you really need it" advantage visible in stdout.</li>
+   *   <li>Uses staged targeted reads: footer only up front, then the page-index byte range,
+   *       then only the surviving filter + payload column-chunk byte ranges. No full-file
+   *       read is performed at any point.</li>
    *   <li>Materialises filter + payload columns with
    *       {@code RowMaskKind.PAGE_INDEX_STATS} + {@code UseDataPageMask.YES}, so the row
    *       mask is seeded from page-level statistics and the materialise calls actually
@@ -242,11 +240,10 @@ public final class HybridScanIoExample {
                                              int literalValue, long legacyTotal)
       throws IOException {
     System.out.println(
-        "[Hybrid: PageIndex Filtering] Reading full file"
-            + " (need page index bytes alongside chunks)...");
+        "[Hybrid: PageIndex Filtering] Reading just the Parquet footer"
+            + " (page index and chunks fetched on demand)...");
     long t = System.nanoTime();
-    try (HostMemoryBuffer file = Util.readFileToHostBuffer(path);
-         HostMemoryBuffer footer = Util.extractFooter(file);
+    try (HostMemoryBuffer footer = Util.readFooterOnly(path);
          HybridScanReader reader = new HybridScanReader(footer, readOpts, filter)) {
       System.out.printf(
           "[Hybrid: PageIndex Filtering] Opened HybridScanReader; footer is %d bytes.%n",
@@ -258,7 +255,7 @@ public final class HybridScanIoExample {
             "[Hybrid: PageIndex Filtering] File has no page index; skipping this variant.");
         return;
       }
-      try (HostMemoryBuffer pi = file.slice(piRange.offset(), piRange.size())) {
+      try (HostMemoryBuffer pi = Util.readByteRange(path, piRange)) {
         reader.setupPageIndex(pi);
       }
       System.out.printf(
@@ -268,8 +265,8 @@ public final class HybridScanIoExample {
       int[] survived = reader.filterRowGroupsWithStats(all);
       System.out.printf(
           "[Hybrid: PageIndex Filtering] Stats-based row-group pruning:"
-              + " %d -> %d row groups survive.%n",
-          all.length, survived.length);
+              + " %d / %d row groups survive.%n",
+          survived.length, all.length);
       if (survived.length == 0) {
         System.out.println(
             "[Hybrid: PageIndex Filtering] All row groups pruned by statistics; nothing to read.");
@@ -279,18 +276,18 @@ public final class HybridScanIoExample {
       ByteRange[] filterRanges  = reader.filterColumnChunksByteRanges(survived);
       ByteRange[] payloadRanges = reader.payloadColumnChunksByteRanges(survived);
       System.out.printf(
-          "[Hybrid: PageIndex Filtering] Copying %d filter column byte range(s) (%s) to device.%n",
+          "[Hybrid: PageIndex Filtering] Reading %d filter column byte range(s) (%s) to device.%n",
           filterRanges.length, columnName);
       System.out.printf(
-          "[Hybrid: PageIndex Filtering] Copying %d payload column byte range(s) to device.%n",
+          "[Hybrid: PageIndex Filtering] Reading %d payload column byte range(s) to device.%n",
           payloadRanges.length);
 
       DeviceMemoryBuffer[] filterCols = null;
       DeviceMemoryBuffer[] payloadCols = null;
       long hybridRows;
       try {
-        filterCols  = Util.copyRangesToDevice(file, filterRanges);
-        payloadCols = Util.copyRangesToDevice(file, payloadRanges);
+        filterCols  = Util.copyRangesToDevice(path, filterRanges);
+        payloadCols = Util.copyRangesToDevice(path, payloadRanges);
         try (HybridScanReader.FilterMaterializationResult fr =
                  reader.materializeFilterColumns(survived, filterCols, UseDataPageMask.YES,
                      HybridScanReader.RowMaskKind.PAGE_INDEX_STATS);

@@ -602,34 +602,18 @@ public class CompiledExpressionTest extends CudfTestBase {
   }
 
   /**
-   * Verifies that a BinaryOperation containing a ColumnNameReference compiles without error and
-   * returns a non-null CompiledExpression, exercising the JNI deserializer for node type
-   * COLUMN_NAME_REFERENCE (id 5).
+   * Verifies that computeColumn throws CudfException when the expression contains a
+   * ColumnNameReference, since plain table views carry no column-name metadata —
+   * name resolution is only supported inside HybridScanReader.
    */
   @Test
-  void testColumnNameReferenceCompilesWithoutError() {
-    ColumnNameReference colRef = new ColumnNameReference("a");
-    Literal lit = Literal.ofInt(42);
-    BinaryOperation op = new BinaryOperation(BinaryOperator.GREATER, colRef, lit);
-    Assertions.assertDoesNotThrow(() -> {
-      try (CompiledExpression compiled = op.compile()) {
-        Assertions.assertNotNull(compiled);
-      }
-    });
-  }
-
-  /** Smoke-tests that ColumnNameReference nodes with different name lengths both compile successfully. */
-  @Test
-  void testColumnNameReferenceDifferentLengthsBothCompile() {
-    Assertions.assertDoesNotThrow(() -> {
-      try (CompiledExpression a = new BinaryOperation(BinaryOperator.GREATER,
-               new ColumnNameReference("a"), Literal.ofInt(1)).compile();
-           CompiledExpression abc = new BinaryOperation(BinaryOperator.GREATER,
-               new ColumnNameReference("abc"), Literal.ofInt(1)).compile()) {
-        Assertions.assertNotNull(a);
-        Assertions.assertNotNull(abc);
-      }
-    });
+  void testColumnNameReferenceThrowsOnComputeColumn() {
+    BinaryOperation op = new BinaryOperation(BinaryOperator.GREATER,
+        new ColumnNameReference("col"), Literal.ofInt(42));
+    try (Table t = new Table.TestBuilder().column(1, 2, 3).build();
+         CompiledExpression compiled = op.compile()) {
+      Assertions.assertThrows(CudfException.class, () -> compiled.computeColumn(t).close());
+    }
   }
 
   /** Verifies that ExpressionType.COLUMN_NAME_REFERENCE has ordinal 5, matching the native plan's expected node-type ID. */

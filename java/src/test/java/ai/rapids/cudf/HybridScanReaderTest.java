@@ -149,7 +149,7 @@ public class HybridScanReaderTest extends CudfTestBase {
   // Tests: secondaryFiltersByteRanges()
   // --------------------------------------------------------------------
 
-  /** Verifies secondaryFiltersByteRanges() returns a structurally valid SecondaryFilterRanges even when the file has no applicable bloom or dictionary pages. */
+  /** Verifies secondaryFiltersByteRanges() returns a structurally valid SecondaryFilterRanges even when the file has no applicable dictionary pages. */
   @Test
   void testSecondaryFiltersByteRangesShape(@TempDir Path tmp) throws IOException {
     File pq = tmp.resolve("fixture.parquet").toFile();
@@ -165,7 +165,6 @@ public class HybridScanReaderTest extends CudfTestBase {
       int[] rgs = reader.allRowGroups();
       SecondaryFilterRanges sfr = reader.secondaryFiltersByteRanges(rgs);
       assertNotNull(sfr);
-      assertNotNull(sfr.bloomFilterRanges());
       assertNotNull(sfr.dictionaryPageRanges());
     }
   }
@@ -191,7 +190,7 @@ public class HybridScanReaderTest extends CudfTestBase {
       SecondaryFilterRanges sfr = reader.secondaryFiltersByteRanges(rgs);
       // Dictionary page ranges may be empty for high-cardinality integer columns; the
       // call must still succeed and must not expand the input row-group set.
-      ByteRange[] dictRanges = sfr.dictionaryPageRangesArray();
+      ByteRange[] dictRanges = sfr.dictionaryPageRanges();
       DeviceMemoryBuffer[] dictBufs = copyRangesToDevice(file, dictRanges);
       try {
         int[] result = reader.filterRowGroupsWithDictionaryPages(dictBufs, rgs);

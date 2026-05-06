@@ -6,23 +6,21 @@
 package ai.rapids.cudf;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.Objects;
 
 /**
- * Pair of byte-range vectors returned by
+ * Pair of byte-range arrays returned by
  * {@link HybridScanReader#secondaryFiltersByteRanges(int[])}.
  *
- * <p>The two vectors describe, for the input row groups:
+ * <p>The two arrays describe, for the input row groups:
  * <ul>
- *   <li>{@link #bloomFilterRanges()} — file byte ranges containing per-column-chunk
- *       Parquet bloom filter blobs that can be used for row-group pruning of equality
- *       predicates;</li>
+ *   <li>bloom-filter ranges — file byte ranges containing per-column-chunk Parquet bloom
+ *       filter blobs (no getter yet; see constructor parameter TODO);</li>
  *   <li>{@link #dictionaryPageRanges()} — file byte ranges of the column-chunk
  *       dictionary pages used for row-group pruning of (in)equality predicates.</li>
  * </ul>
  *
- * <p>Both lists may be empty. The ordering follows the C++ reader's ordering and is
+ * <p>Both arrays may be empty. The ordering follows the C++ reader's ordering and is
  * meaningful: the i-th entry corresponds to the i-th column-chunk needing the
  * respective filter.
  *
@@ -36,6 +34,12 @@ public final class SecondaryFilterRanges {
   private final ByteRange[] bloomFilterRanges;
   private final ByteRange[] dictionaryPageRanges;
 
+  /**
+   * @param bloomFilterRanges   bloom-filter byte ranges (stored but not yet exposed via a getter;
+   *                            TODO: add {@code bloomFilterRanges()} once bloom filter writing is
+   *                            supported in {@link ParquetWriterOptions})
+   * @param dictionaryPageRanges dictionary-page byte ranges
+   */
   public SecondaryFilterRanges(ByteRange[] bloomFilterRanges,
                                ByteRange[] dictionaryPageRanges) {
     this.bloomFilterRanges =
@@ -44,23 +48,8 @@ public final class SecondaryFilterRanges {
         dictionaryPageRanges == null ? new ByteRange[0] : dictionaryPageRanges.clone();
   }
 
-  /** @return the bloom-filter byte ranges as an unmodifiable list. */
-  public List<ByteRange> bloomFilterRanges() {
-    return Arrays.asList(bloomFilterRanges);
-  }
-
-  /** @return the dictionary-page byte ranges as an unmodifiable list. */
-  public List<ByteRange> dictionaryPageRanges() {
-    return Arrays.asList(dictionaryPageRanges);
-  }
-
-  /** @return a defensive copy of the bloom-filter ranges. */
-  public ByteRange[] bloomFilterRangesArray() {
-    return bloomFilterRanges.clone();
-  }
-
-  /** @return a defensive copy of the dictionary-page ranges. */
-  public ByteRange[] dictionaryPageRangesArray() {
+  /** @return a defensive copy of the dictionary-page byte ranges. */
+  public ByteRange[] dictionaryPageRanges() {
     return dictionaryPageRanges.clone();
   }
 

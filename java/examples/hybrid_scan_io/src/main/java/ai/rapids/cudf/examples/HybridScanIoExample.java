@@ -145,9 +145,9 @@ public final class HybridScanIoExample {
       legacyRows = filtered.getRowCount();
     }
     long legacyMs = (System.nanoTime() - t0) / 1_000_000L;
-    System.out.printf("[Legacy] Applied filter '%s > %d' on materialised table.%n",
+    System.out.printf("[Legacy] Applied filter '%s > %,d' on materialised table.%n",
         columnName, literalValue);
-    System.out.printf("[Legacy] %d / %d rows survive.%n", legacyRows, legacyTotal);
+    System.out.printf("[Legacy] %,d / %,d rows survive.%n", legacyRows, legacyTotal);
     System.out.printf("[Legacy] Processing time: %d ms.%n", legacyMs);
     return legacyTotal;
   }
@@ -203,17 +203,17 @@ public final class HybridScanIoExample {
                fr.rowMask(), UseDataPageMask.NO)) {
         hybridRows = pTable.getRowCount();
         System.out.printf(
-            "[Hybrid] Materialised filter columns: %d rows survive %s > %d.%n",
+            "[Hybrid] Materialised filter columns: %,d rows survive %s > %,d.%n",
             fr.table().getRowCount(), columnName, literalValue);
         System.out.printf(
-            "[Hybrid] Materialised payload columns aligned to row mask: %d rows.%n",
+            "[Hybrid] Materialised payload columns aligned to row mask: %,d rows.%n",
             hybridRows);
       } finally {
         Util.closeAll(filterCols);
         Util.closeAll(payloadCols);
       }
       long hybridMs = (System.nanoTime() - t1) / 1_000_000L;
-      System.out.printf("[Hybrid] Total: %d / %d rows survive.%n", hybridRows, legacyTotal);
+      System.out.printf("[Hybrid] Total: %,d / %,d rows survive.%n", hybridRows, legacyTotal);
       System.out.printf("[Hybrid] Processing time: %d ms.%n", hybridMs);
     }
   }
@@ -305,7 +305,7 @@ public final class HybridScanIoExample {
               rowsInSurvivedGroups, survived.length);
           System.out.printf(
               "[Hybrid: PageIndex Filtering] Page-index + filter: %,d rows skipped,"
-                  + " %,d rows survive %s > %d.%n",
+                  + " %,d rows survive %s > %,d.%n",
               rowsSkipped, hybridRows, columnName, literalValue);
         }
       } finally {

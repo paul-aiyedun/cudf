@@ -23,8 +23,8 @@ import java.io.IOException;
  * (bounded by {@code chunkReadLimit} bytes). No filter is applied — all columns and all rows are
  * materialised.
  *
- * <p>This illustrates how to bound GPU memory usage for very large files: the pass budget caps
- * total row-group bytes copied to device per pass, and the chunk budget caps decoded output Table
+ * <p>This illustrates how to bound GPU memory usage for very large files: the pass read limit caps
+ * total row-group bytes copied to device per pass, and the chunk read limit caps decoded output Table
  * bytes per {@link HybridScanReader#materializeAllColumnsChunk()} call. Set either limit to
  * {@code 0} to remove that bound.
  *
@@ -78,15 +78,15 @@ public final class HybridScanPipelineExample {
           + " \u2014 no filter, all columns.");
       System.out.println("[Pipeline]   Purpose : illustrates GPU memory bounding for large files"
           + " via two limits:");
-      System.out.println("[Pipeline]             pass budget  caps total row-group bytes"
+      System.out.println("[Pipeline]             pass read limit caps total row group bytes"
           + " copied to device per pass;");
-      System.out.println("[Pipeline]             chunk budget caps decoded output Table bytes"
+      System.out.println("[Pipeline]             chunk read limit caps decoded output Table bytes"
           + " per materialize call.");
       System.out.println("[Pipeline]             Set either to 0 to remove that limit.");
-      System.out.printf("[Pipeline]   Pass budget : %d bytes%s%n",
+      System.out.printf("[Pipeline]   Pass read limit : %,d bytes%s%n",
           passReadLimit,
           passReadLimit == 0 ? "  (0 = all row groups in one pass)" : "");
-      System.out.printf("[Pipeline]   Chunk budget: %d bytes%s%n",
+      System.out.printf("[Pipeline]   Chunk read limit: %,d bytes%s%n",
           chunkReadLimit,
           chunkReadLimit == 0 ? "  (0 = entire pass as one Table chunk)" : "");
 
@@ -105,7 +105,7 @@ public final class HybridScanPipelineExample {
         int[][] passes = reader.constructRowGroupPasses(allRowGroups, passReadLimit);
         System.out.printf(
             "[Pipeline] Step 2 \u2014 Partitioning %d row group(s) into %d pass(es)"
-                + " (pass-budget=%d bytes).%n",
+                + " (pass-read-limit=%,d bytes).%n",
             allRowGroups.length, passes.length, passReadLimit);
 
         long totalRows = 0;
@@ -127,7 +127,7 @@ public final class HybridScanPipelineExample {
           // compressed column chunk data for every column in this pass.
           DeviceMemoryBuffer[] devs = Util.copyRangesToDevice(file, ranges);
           try {
-            System.out.printf("[Pipeline]   Draining chunks (chunk-budget=%d bytes)...%n",
+            System.out.printf("[Pipeline]   Draining chunks (chunk-read-limit=%,d bytes)...%n",
                 chunkReadLimit);
             // Register the compressed column chunk data with the reader and set up
             // the chunking state. The reader decompresses and decodes page headers

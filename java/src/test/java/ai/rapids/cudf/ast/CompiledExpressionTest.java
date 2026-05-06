@@ -600,4 +600,41 @@ public class CompiledExpressionTest extends CudfTestBase {
       Assertions.assertThrows(CudfException.class, () -> compiledExpr.computeColumn(t).close());
     }
   }
+
+  /**
+   * Verifies that a BinaryOperation containing a ColumnNameReference compiles without error and
+   * returns a non-null CompiledExpression, exercising the JNI deserializer for node type
+   * COLUMN_NAME_REFERENCE (id 5).
+   */
+  @Test
+  void testColumnNameReferenceCompilesWithoutError() {
+    ColumnNameReference colRef = new ColumnNameReference("a");
+    Literal lit = Literal.ofInt(42);
+    BinaryOperation op = new BinaryOperation(BinaryOperator.GREATER, colRef, lit);
+    Assertions.assertDoesNotThrow(() -> {
+      try (CompiledExpression compiled = op.compile()) {
+        Assertions.assertNotNull(compiled);
+      }
+    });
+  }
+
+  /** Smoke-tests that ColumnNameReference nodes with different name lengths both compile successfully. */
+  @Test
+  void testColumnNameReferenceDifferentLengthsBothCompile() {
+    Assertions.assertDoesNotThrow(() -> {
+      try (CompiledExpression a = new BinaryOperation(BinaryOperator.GREATER,
+               new ColumnNameReference("a"), Literal.ofInt(1)).compile();
+           CompiledExpression abc = new BinaryOperation(BinaryOperator.GREATER,
+               new ColumnNameReference("abc"), Literal.ofInt(1)).compile()) {
+        Assertions.assertNotNull(a);
+        Assertions.assertNotNull(abc);
+      }
+    });
+  }
+
+  /** Verifies that ExpressionType.COLUMN_NAME_REFERENCE has ordinal 5, matching the native plan's expected node-type ID. */
+  @Test
+  void testColumnNameReferenceTypeOrdinalMatchesPlan() {
+    Assertions.assertEquals(5, AstExpression.ExpressionType.COLUMN_NAME_REFERENCE.ordinal());
+  }
 }

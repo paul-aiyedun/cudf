@@ -5,21 +5,23 @@
 
 package ai.rapids.cudf.ast;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.rapids.cudf.CudfTestBase;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+
 /**
  * Unit tests for {@link ColumnNameReference}.
  *
  * <p>Tests are organised in the same order as the public API: constructor,
- * {@code getColumnName()}, {@code toString()}, {@code compile()} (inherited from
- * {@link AstExpression}), and the {@code ExpressionType} ordinal invariant.
+ * {@code getColumnName()}, {@code toString()}, {@code getSerializedSize()},
+ * and {@code serialize()}.
  */
 public class ColumnNameReferenceTest extends CudfTestBase {
 
@@ -46,8 +48,8 @@ public class ColumnNameReferenceTest extends CudfTestBase {
   /** Verifies that getColumnName() returns the name supplied to the constructor. */
   @Test
   void testGetColumnName() {
-    ColumnNameReference c = new ColumnNameReference("my_col");
-    assertEquals("my_col", c.getColumnName());
+    ColumnNameReference colNameRef = new ColumnNameReference("my_col");
+    assertEquals("my_col", colNameRef.getColumnName());
   }
 
   // --------------------------------------------------------------------
@@ -61,53 +63,39 @@ public class ColumnNameReferenceTest extends CudfTestBase {
   }
 
   // --------------------------------------------------------------------
-  // Tests: compile() (inherited from AstExpression)
+  // Tests: getSerializedSize()
   // --------------------------------------------------------------------
 
   /**
-   * Verifies that a filter expression using ColumnNameReference compiles without error and returns
-   * a non-null CompiledExpression, exercising the JNI deserializer for node type
-   * COLUMN_NAME_REFERENCE.
+   * Verifies that getSerializedSize() equals 1 (node-type byte) + 4 (name-length int) +
+   * the number of UTF-8 bytes in the name.
    */
   @Test
-  void testCompileEquivalentToBuildingFilterExpression() {
-    ColumnNameReference colRef = new ColumnNameReference("a");
-    Literal lit = Literal.ofInt(42);
-    BinaryOperation op = new BinaryOperation(BinaryOperator.GREATER, colRef, lit);
-    assertDoesNotThrow(() -> {
-      try (CompiledExpression compiled = op.compile()) {
-        assertNotNull(compiled);
-      }
-    });
-  }
-
-  /**
-   * Smoke-tests that two ColumnNameReference nodes with different name lengths both compile
-   * successfully, confirming the serialized size accounts for name bytes.
-   */
-  @Test
-  void testSerializedSizeIncludesNameBytes() {
-    assertDoesNotThrow(() -> {
-      try (CompiledExpression a = new BinaryOperation(BinaryOperator.GREATER,
-               new ColumnNameReference("a"), Literal.ofInt(1)).compile();
-           CompiledExpression abc = new BinaryOperation(BinaryOperator.GREATER,
-               new ColumnNameReference("abc"), Literal.ofInt(1)).compile()) {
-        assertNotNull(a);
-        assertNotNull(abc);
-      }
-    });
+  void testGetSerializedSizeMatchesExpectedLayout() {
+    // "zip" = 3 UTF-8 bytes → 1 + 4 + 3 = 8
+    assertEquals(8, new ColumnNameReference("zip").getSerializedSize());
   }
 
   // --------------------------------------------------------------------
-  // Tests: ExpressionType ordinal invariant
+  // Tests: serialize()
   // --------------------------------------------------------------------
 
   /**
-   * Verifies that COLUMN_NAME_REFERENCE has ordinal 5, matching the native plan's expected
-   * node-type ID.
+   * Verifies that serialize() writes the COLUMN_NAME_REFERENCE node-type byte (5), the
+   * name length as a 4-byte int, and the UTF-8 name bytes, in that order.
    */
   @Test
-  void testColumnNameReferenceTypeOrdinalMatchesPlan() {
-    assertEquals(5, AstExpression.ExpressionType.COLUMN_NAME_REFERENCE.ordinal());
+  void testSerializeWritesNodeTypeIdNameLengthAndNameBytes() {
+    ColumnNameReference colNameRef = new ColumnNameReference("zip");
+    ByteBuffer buffer = ByteBuffer.allocate(colNameRef.getSerializedSize())
+                                  .order(ByteOrder.nativeOrder());
+    colNameRef.serialize(buffer);
+    buffer.flip();
+    assertEquals(5, buffer.get());       // COLUMN_NAME_REFERENCE nativeId
+    assertEquals(3, buffer.getInt());    // "zip" is 3 UTF-8 bytes
+    byte[] nameBytes = "zip".getBytes(StandardCharsets.UTF_8);
+    for (byte b : nameBytes) {
+      assertEquals(b, buffer.get());
+    }
   }
 }

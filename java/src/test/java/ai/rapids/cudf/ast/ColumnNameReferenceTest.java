@@ -18,10 +18,6 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Unit tests for {@link ColumnNameReference}.
- *
- * <p>Tests are organised in the same order as the public API: constructor,
- * {@code getColumnName()}, {@code toString()}, {@code getSerializedSize()},
- * and {@code serialize()}.
  */
 public class ColumnNameReferenceTest extends CudfTestBase {
 

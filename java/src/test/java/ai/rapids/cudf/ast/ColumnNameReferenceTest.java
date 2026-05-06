@@ -16,35 +16,61 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for {@link ColumnNameReference}.
+ *
+ * <p>Tests are organised in the same order as the public API: constructor,
+ * {@code getColumnName()}, {@code toString()}, {@code compile()} (inherited from
+ * {@link AstExpression}), and the {@code ExpressionType} ordinal invariant.
  */
 public class ColumnNameReferenceTest extends CudfTestBase {
 
+  // --------------------------------------------------------------------
+  // Tests: ColumnNameReference (constructor)
+  // --------------------------------------------------------------------
+
+  /** Verifies that passing null to the constructor throws IllegalArgumentException. */
   @Test
   void testNullNameRejected() {
     assertThrows(IllegalArgumentException.class, () -> new ColumnNameReference(null));
   }
 
+  /** Verifies that passing an empty string to the constructor throws IllegalArgumentException. */
   @Test
   void testEmptyNameRejected() {
     assertThrows(IllegalArgumentException.class, () -> new ColumnNameReference(""));
   }
 
+  // --------------------------------------------------------------------
+  // Tests: getColumnName()
+  // --------------------------------------------------------------------
+
+  /** Verifies that getColumnName() returns the name supplied to the constructor. */
   @Test
   void testGetColumnName() {
     ColumnNameReference c = new ColumnNameReference("my_col");
     assertEquals("my_col", c.getColumnName());
   }
 
+  // --------------------------------------------------------------------
+  // Tests: toString()
+  // --------------------------------------------------------------------
+
+  /** Verifies that toString() produces the expected COLUMN("name") representation. */
   @Test
   void testToString() {
     assertEquals("COLUMN(\"zip\")", new ColumnNameReference("zip").toString());
   }
 
+  // --------------------------------------------------------------------
+  // Tests: compile() (inherited from AstExpression)
+  // --------------------------------------------------------------------
+
+  /**
+   * Verifies that a filter expression using ColumnNameReference compiles without error and returns
+   * a non-null CompiledExpression, exercising the JNI deserializer for node type
+   * COLUMN_NAME_REFERENCE.
+   */
   @Test
   void testCompileEquivalentToBuildingFilterExpression() {
-    // Build a small filter expression using ColumnNameReference and verify that compiling
-    // it does not throw and produces a non-null CompiledExpression. This exercises the JNI
-    // deserializer that parses the COLUMN_NAME_REFERENCE node type (id 5).
     ColumnNameReference colRef = new ColumnNameReference("a");
     Literal lit = Literal.ofInt(42);
     BinaryOperation op = new BinaryOperation(BinaryOperator.GREATER, colRef, lit);
@@ -55,11 +81,12 @@ public class ColumnNameReferenceTest extends CudfTestBase {
     });
   }
 
+  /**
+   * Smoke-tests that two ColumnNameReference nodes with different name lengths both compile
+   * successfully, confirming the serialized size accounts for name bytes.
+   */
   @Test
   void testSerializedSizeIncludesNameBytes() {
-    // The serialized form is: 1 byte (node type) + 4 bytes (string length) + UTF-8 bytes.
-    // We can only access getSerializedSize() through the compile path; instead, verify two
-    // different names produce reasonable byte counts via compile (smoke test).
     assertDoesNotThrow(() -> {
       try (CompiledExpression a = new BinaryOperation(BinaryOperator.GREATER,
                new ColumnNameReference("a"), Literal.ofInt(1)).compile();
@@ -71,10 +98,16 @@ public class ColumnNameReferenceTest extends CudfTestBase {
     });
   }
 
+  // --------------------------------------------------------------------
+  // Tests: ExpressionType ordinal invariant
+  // --------------------------------------------------------------------
+
+  /**
+   * Verifies that COLUMN_NAME_REFERENCE has ordinal 5, matching the native plan's expected
+   * node-type ID.
+   */
   @Test
   void testColumnNameReferenceTypeOrdinalMatchesPlan() {
-    // The plan and the JNI dispatch require COLUMN_NAME_REFERENCE to be the 6th entry
-    // (ordinal 5) of the ExpressionType enum so that its serialized native ID is 5.
     assertEquals(5, AstExpression.ExpressionType.COLUMN_NAME_REFERENCE.ordinal());
   }
 }

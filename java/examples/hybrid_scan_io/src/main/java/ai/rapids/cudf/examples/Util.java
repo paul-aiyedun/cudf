@@ -5,9 +5,9 @@
 
 package ai.rapids.cudf.examples;
 
+import ai.rapids.cudf.ByteRange;
 import ai.rapids.cudf.DeviceMemoryBuffer;
 import ai.rapids.cudf.HostMemoryBuffer;
-import ai.rapids.cudf.experimental.ByteRange;
 
 import java.io.File;
 import java.io.IOException;

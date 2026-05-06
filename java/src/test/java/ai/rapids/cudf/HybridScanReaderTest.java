@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.rapids.cudf.experimental;
+package ai.rapids.cudf;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -11,14 +11,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.rapids.cudf.ColumnVector;
-import ai.rapids.cudf.CudfTestBase;
-import ai.rapids.cudf.DeviceMemoryBuffer;
-import ai.rapids.cudf.HostMemoryBuffer;
-import ai.rapids.cudf.ParquetOptions;
-import ai.rapids.cudf.ParquetWriterOptions;
-import ai.rapids.cudf.Table;
-import ai.rapids.cudf.TableWriter;
 import ai.rapids.cudf.ast.BinaryOperation;
 import ai.rapids.cudf.ast.BinaryOperator;
 import ai.rapids.cudf.ast.ColumnNameReference;

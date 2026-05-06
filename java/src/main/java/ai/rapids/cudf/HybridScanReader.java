@@ -3,17 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.rapids.cudf.experimental;
+package ai.rapids.cudf;
 
-import ai.rapids.cudf.ColumnVector;
-import ai.rapids.cudf.DType;
-import ai.rapids.cudf.DeviceMemoryBuffer;
-import ai.rapids.cudf.HostMemoryBuffer;
-import ai.rapids.cudf.MemoryCleaner;
-import ai.rapids.cudf.NativeDepsLoader;
-import ai.rapids.cudf.ParquetOptions;
-import ai.rapids.cudf.ParquetOptionsAccess;
-import ai.rapids.cudf.Table;
 import ai.rapids.cudf.ast.CompiledExpression;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,8 +37,9 @@ import java.util.Arrays;
  * {@code setupChunkingFor*} + {@code materialize*Chunk} family of methods, mirroring the C++
  * chunked reader pipeline.
  *
- * <p>This API is experimental; signatures may change between releases.
+ * <p>The APIs in this file are experimental and subject to change.
  */
+@Experimental
 public class HybridScanReader implements AutoCloseable {
   static {
     NativeDepsLoader.loadNativeDeps();
@@ -159,9 +151,9 @@ public class HybridScanReader implements AutoCloseable {
       opts = ParquetOptions.DEFAULT;
     }
     long filterHandle = (filter != null) ? filter.getNativeHandle() : 0;
-    String[] columnNames = ParquetOptionsAccess.getIncludeColumnNames(opts);
-    boolean[] readBinaryAsString = ParquetOptionsAccess.getReadBinaryAsString(opts);
-    DType timeUnit = ParquetOptionsAccess.getTimeUnit(opts);
+    String[] columnNames = opts.getIncludeColumnNames();
+    boolean[] readBinaryAsString = opts.getReadBinaryAsString();
+    DType timeUnit = opts.timeUnit();
     long handle = createFromFooter(
         footerBuffer.getAddress(),
         footerBuffer.getLength(),

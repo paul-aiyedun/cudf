@@ -5,14 +5,14 @@
 
 package ai.rapids.cudf.examples;
 
+import ai.rapids.cudf.ByteRange;
 import ai.rapids.cudf.DeviceMemoryBuffer;
 import ai.rapids.cudf.HostMemoryBuffer;
+import ai.rapids.cudf.HybridScanReader;
 import ai.rapids.cudf.ParquetOptions;
 import ai.rapids.cudf.Rmm;
 import ai.rapids.cudf.RmmAllocationMode;
 import ai.rapids.cudf.Table;
-import ai.rapids.cudf.experimental.ByteRange;
-import ai.rapids.cudf.experimental.HybridScanReader;
 
 import java.io.File;
 import java.io.IOException;

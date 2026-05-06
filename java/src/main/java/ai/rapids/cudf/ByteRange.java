@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.rapids.cudf.experimental;
+package ai.rapids.cudf;
 
 import java.util.Objects;
 
@@ -11,7 +11,10 @@ import java.util.Objects;
  * Immutable byte range describing an offset and size within a file or buffer.
  *
  * <p>Mirrors {@code cudf::io::text::byte_range_info}.
+ *
+ * <p>The APIs in this file are experimental and subject to change.
  */
+@Experimental
 public final class ByteRange {
   private final long offset;
   private final long size;

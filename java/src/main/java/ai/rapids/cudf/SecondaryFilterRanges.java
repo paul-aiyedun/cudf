@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.rapids.cudf.experimental;
+package ai.rapids.cudf;
 
 import java.util.Arrays;
 import java.util.List;
@@ -28,7 +28,10 @@ import java.util.Objects;
  *
  * <p>Mirrors the {@code std::pair<std::vector<byte_range_info>, std::vector<byte_range_info>>}
  * returned by {@code hybrid_scan_reader::secondary_filters_byte_ranges}.
+ *
+ * <p>The APIs in this file are experimental and subject to change.
  */
+@Experimental
 public final class SecondaryFilterRanges {
   private final ByteRange[] bloomFilterRanges;
   private final ByteRange[] dictionaryPageRanges;

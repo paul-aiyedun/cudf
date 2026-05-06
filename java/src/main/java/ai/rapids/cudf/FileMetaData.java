@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.rapids.cudf.experimental;
+package ai.rapids.cudf;
 
 /**
  * A read-only snapshot of the Parquet file footer metadata exposed by the hybrid scan reader.
@@ -15,7 +15,10 @@ package ai.rapids.cudf.experimental;
  *
  * <p>Instances of this class are constructed only by the JNI layer
  * (see {@link HybridScanReader#parquetMetadata()}).
+ *
+ * <p>The APIs in this file are experimental and subject to change.
  */
+@Experimental
 public final class FileMetaData {
   private final int version;
   private final long numRows;

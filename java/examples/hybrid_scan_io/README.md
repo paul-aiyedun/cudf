@@ -1,9 +1,9 @@
 # cudf Java hybrid_scan_io examples
 
 Java equivalents of the C++ examples under `cpp/examples/hybrid_scan_io/`. They demonstrate
-how to use the experimental `ai.rapids.cudf.experimental.HybridScanReader` (the Java binding
-for `cudf::io::parquet::experimental::hybrid_scan_reader`) to read Parquet files subject to
-selective filter expressions.
+how to use the experimental `ai.rapids.cudf.HybridScanReader` (the Java binding for
+`cudf::io::parquet::experimental::hybrid_scan_reader`, marked `@Experimental` on the Java
+side) to read Parquet files subject to selective filter expressions.
 
 ## Examples
 

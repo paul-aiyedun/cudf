@@ -25,15 +25,14 @@ extern "C" {
 
 // Returns: [row_mask_col_handle, filter_table_col0_handle, ..., filter_table_colN_handle]
 JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_materializeFilterColumnsWithKind(
-  JNIEnv* env,
-  jclass,
-  jlong handle,
-  jintArray j_row_groups,
-  jlongArray j_addrs,
-  jlongArray j_lens,
-  jboolean use_data_page_mask,
-  jboolean all_true)
+Java_ai_rapids_cudf_HybridScanReader_materializeFilterColumnsWithKind(JNIEnv* env,
+                                                                      jclass,
+                                                                      jlong handle,
+                                                                      jintArray j_row_groups,
+                                                                      jlongArray j_addrs,
+                                                                      jlongArray j_lens,
+                                                                      jboolean use_data_page_mask,
+                                                                      jboolean all_true)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", nullptr);
@@ -54,15 +53,15 @@ Java_ai_rapids_cudf_HybridScanReader_materializeFilterColumnsWithKind(
         holder.span(), wrapper->options, stream, mr);
     }
     auto mut_view = row_mask_col->mutable_view();
-    auto mode     = use_data_page_mask ? exp_pq::use_data_page_mask::YES
-                                       : exp_pq::use_data_page_mask::NO;
-    auto result   = wrapper->reader->materialize_filter_columns(
+    auto mode =
+      use_data_page_mask ? exp_pq::use_data_page_mask::YES : exp_pq::use_data_page_mask::NO;
+    auto result = wrapper->reader->materialize_filter_columns(
       holder.span(), spans, mut_view, mode, wrapper->options, stream, mr);
     // Pack: [row_mask_handle, table_col0, ..., table_colN]
     auto table_handles = cudf::jni::convert_table_for_return(env, result.tbl);
     cudf::jni::native_jlongArray table_arr(env, table_handles);
     jsize n_table_cols = table_arr.size();
-    jlongArray out = env->NewLongArray(1 + n_table_cols);
+    jlongArray out     = env->NewLongArray(1 + n_table_cols);
     if (out == nullptr) { return nullptr; }
     jlong row_mask_handle = cudf::jni::release_as_jlong(std::move(row_mask_col));
     env->SetLongArrayRegion(out, 0, 1, &row_mask_handle);
@@ -73,15 +72,14 @@ Java_ai_rapids_cudf_HybridScanReader_materializeFilterColumnsWithKind(
 }
 
 JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_materializePayloadColumns(
-  JNIEnv* env,
-  jclass,
-  jlong handle,
-  jintArray j_row_groups,
-  jlongArray j_addrs,
-  jlongArray j_lens,
-  jlong row_mask_view_handle,
-  jboolean use_data_page_mask)
+Java_ai_rapids_cudf_HybridScanReader_materializePayloadColumns(JNIEnv* env,
+                                                               jclass,
+                                                               jlong handle,
+                                                               jintArray j_row_groups,
+                                                               jlongArray j_addrs,
+                                                               jlongArray j_lens,
+                                                               jlong row_mask_view_handle,
+                                                               jboolean use_data_page_mask)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", nullptr);
@@ -93,28 +91,23 @@ Java_ai_rapids_cudf_HybridScanReader_materializePayloadColumns(
     auto holder    = make_row_group_span(env, j_row_groups);
     auto spans     = make_device_spans(env, j_addrs, j_lens);
     auto* row_mask = reinterpret_cast<cudf::column_view const*>(row_mask_view_handle);
-    auto mode      = use_data_page_mask ? exp_pq::use_data_page_mask::YES
-                                        : exp_pq::use_data_page_mask::NO;
-    auto result    = wrapper->reader->materialize_payload_columns(
-      holder.span(),
-      spans,
-      *row_mask,
-      mode,
-      wrapper->options,
-      cudf::get_default_stream(),
-      cudf::get_current_device_resource_ref());
+    auto mode =
+      use_data_page_mask ? exp_pq::use_data_page_mask::YES : exp_pq::use_data_page_mask::NO;
+    auto result =
+      wrapper->reader->materialize_payload_columns(holder.span(),
+                                                   spans,
+                                                   *row_mask,
+                                                   mode,
+                                                   wrapper->options,
+                                                   cudf::get_default_stream(),
+                                                   cudf::get_current_device_resource_ref());
     return cudf::jni::convert_table_for_return(env, result.tbl);
   }
   JNI_CATCH(env, nullptr);
 }
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_materializeAllColumns(JNIEnv* env,
-                                                                        jclass,
-                                                                        jlong handle,
-                                                                        jintArray j_row_groups,
-                                                                        jlongArray j_addrs,
-                                                                        jlongArray j_lens)
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_HybridScanReader_materializeAllColumns(
+  JNIEnv* env, jclass, jlong handle, jintArray j_row_groups, jlongArray j_addrs, jlongArray j_lens)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", nullptr);
@@ -124,12 +117,11 @@ Java_ai_rapids_cudf_HybridScanReader_materializeAllColumns(JNIEnv* env,
     auto* wrapper = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
     auto holder   = make_row_group_span(env, j_row_groups);
     auto spans    = make_device_spans(env, j_addrs, j_lens);
-    auto result   = wrapper->reader->materialize_all_columns(
-      holder.span(),
-      spans,
-      wrapper->options,
-      cudf::get_default_stream(),
-      cudf::get_current_device_resource_ref());
+    auto result   = wrapper->reader->materialize_all_columns(holder.span(),
+                                                           spans,
+                                                           wrapper->options,
+                                                           cudf::get_default_stream(),
+                                                           cudf::get_current_device_resource_ref());
     return cudf::jni::convert_table_for_return(env, result.tbl);
   }
   JNI_CATCH(env, nullptr);
@@ -143,8 +135,7 @@ Java_ai_rapids_cudf_HybridScanReader_materializeAllColumns(JNIEnv* env,
 // underlying reader, and stores the owned row mask in the wrapper. Subsequent
 // materializeFilterColumnsChunk calls mutate this column in place; takeFilterRowMask
 // transfers ownership of the mutated column out to Java.
-JNIEXPORT void JNICALL
-Java_ai_rapids_cudf_HybridScanReader_setupChunkingForFilterColumnsWithKind(
+JNIEXPORT void JNICALL Java_ai_rapids_cudf_HybridScanReader_setupChunkingForFilterColumnsWithKind(
   JNIEnv* env,
   jclass,
   jlong handle,
@@ -177,26 +168,24 @@ Java_ai_rapids_cudf_HybridScanReader_setupChunkingForFilterColumnsWithKind(
       row_mask_col = wrapper->reader->build_row_mask_with_page_index_stats(
         holder.span(), wrapper->options, stream, mr);
     }
-    auto mode = use_data_page_mask ? exp_pq::use_data_page_mask::YES
-                                   : exp_pq::use_data_page_mask::NO;
-    wrapper->reader->setup_chunking_for_filter_columns(
-      static_cast<std::size_t>(chunk_read_limit),
-      static_cast<std::size_t>(pass_read_limit),
-      holder.span(),
-      row_mask_col->view(),
-      mode,
-      spans,
-      wrapper->options,
-      stream,
-      mr);
+    auto mode =
+      use_data_page_mask ? exp_pq::use_data_page_mask::YES : exp_pq::use_data_page_mask::NO;
+    wrapper->reader->setup_chunking_for_filter_columns(static_cast<std::size_t>(chunk_read_limit),
+                                                       static_cast<std::size_t>(pass_read_limit),
+                                                       holder.span(),
+                                                       row_mask_col->view(),
+                                                       mode,
+                                                       spans,
+                                                       wrapper->options,
+                                                       stream,
+                                                       mr);
     // Store the owned column for the rest of the chunked filter pipeline.
     wrapper->chunked_filter_row_mask = std::move(row_mask_col);
   }
   JNI_CATCH(env, );
 }
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_materializeFilterColumnsChunk(
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_HybridScanReader_materializeFilterColumnsChunk(
   JNIEnv* env, jclass, jlong handle)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
@@ -205,11 +194,10 @@ Java_ai_rapids_cudf_HybridScanReader_materializeFilterColumnsChunk(
     cudf::jni::auto_set_device(env);
     auto* wrapper = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
     if (wrapper->chunked_filter_row_mask == nullptr) {
-      JNI_THROW_NEW(
-        env,
-        cudf::jni::ILLEGAL_ARG_EXCEPTION_CLASS,
-        "no active chunked-filter pipeline; call setupChunkingForFilterColumns first",
-        nullptr);
+      JNI_THROW_NEW(env,
+                    cudf::jni::ILLEGAL_ARG_EXCEPTION_CLASS,
+                    "no active chunked-filter pipeline; call setupChunkingForFilterColumns first",
+                    nullptr);
     }
     auto mut_view = wrapper->chunked_filter_row_mask->mutable_view();
     auto result   = wrapper->reader->materialize_filter_columns_chunk(mut_view);
@@ -221,10 +209,9 @@ Java_ai_rapids_cudf_HybridScanReader_materializeFilterColumnsChunk(
 // Transfer ownership of the chunked-filter row mask out of the wrapper to Java.
 // After this call the wrapper's slot is nullptr; subsequent chunk calls will fail until
 // setupChunkingForFilterColumns is invoked again.
-JNIEXPORT jlong JNICALL
-Java_ai_rapids_cudf_HybridScanReader_takeFilterRowMask(JNIEnv* env,
-                                                                    jclass,
-                                                                    jlong handle)
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_HybridScanReader_takeFilterRowMask(JNIEnv* env,
+                                                                               jclass,
+                                                                               jlong handle)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", 0);
   JNI_TRY
@@ -232,12 +219,11 @@ Java_ai_rapids_cudf_HybridScanReader_takeFilterRowMask(JNIEnv* env,
     cudf::jni::auto_set_device(env);
     auto* wrapper = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
     if (wrapper->chunked_filter_row_mask == nullptr) {
-      JNI_THROW_NEW(
-        env,
-        cudf::jni::ILLEGAL_ARG_EXCEPTION_CLASS,
-        "no chunked-filter row mask present; call setupChunkingForFilterColumns first "
-        "(or it has already been taken)",
-        0);
+      JNI_THROW_NEW(env,
+                    cudf::jni::ILLEGAL_ARG_EXCEPTION_CLASS,
+                    "no chunked-filter row mask present; call setupChunkingForFilterColumns first "
+                    "(or it has already been taken)",
+                    0);
     }
     return cudf::jni::release_as_jlong(std::move(wrapper->chunked_filter_row_mask));
   }
@@ -245,17 +231,16 @@ Java_ai_rapids_cudf_HybridScanReader_takeFilterRowMask(JNIEnv* env,
 }
 
 JNIEXPORT void JNICALL
-Java_ai_rapids_cudf_HybridScanReader_setupChunkingForPayloadColumns(
-  JNIEnv* env,
-  jclass,
-  jlong handle,
-  jlong chunk_read_limit,
-  jlong pass_read_limit,
-  jintArray j_row_groups,
-  jlong row_mask_view_handle,
-  jboolean use_data_page_mask,
-  jlongArray j_addrs,
-  jlongArray j_lens)
+Java_ai_rapids_cudf_HybridScanReader_setupChunkingForPayloadColumns(JNIEnv* env,
+                                                                    jclass,
+                                                                    jlong handle,
+                                                                    jlong chunk_read_limit,
+                                                                    jlong pass_read_limit,
+                                                                    jintArray j_row_groups,
+                                                                    jlong row_mask_view_handle,
+                                                                    jboolean use_data_page_mask,
+                                                                    jlongArray j_addrs,
+                                                                    jlongArray j_lens)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", );
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", );
@@ -267,24 +252,22 @@ Java_ai_rapids_cudf_HybridScanReader_setupChunkingForPayloadColumns(
     auto holder    = make_row_group_span(env, j_row_groups);
     auto spans     = make_device_spans(env, j_addrs, j_lens);
     auto* row_mask = reinterpret_cast<cudf::column_view const*>(row_mask_view_handle);
-    auto mode      = use_data_page_mask ? exp_pq::use_data_page_mask::YES
-                                        : exp_pq::use_data_page_mask::NO;
-    wrapper->reader->setup_chunking_for_payload_columns(
-      static_cast<std::size_t>(chunk_read_limit),
-      static_cast<std::size_t>(pass_read_limit),
-      holder.span(),
-      *row_mask,
-      mode,
-      spans,
-      wrapper->options,
-      cudf::get_default_stream(),
-      cudf::get_current_device_resource_ref());
+    auto mode =
+      use_data_page_mask ? exp_pq::use_data_page_mask::YES : exp_pq::use_data_page_mask::NO;
+    wrapper->reader->setup_chunking_for_payload_columns(static_cast<std::size_t>(chunk_read_limit),
+                                                        static_cast<std::size_t>(pass_read_limit),
+                                                        holder.span(),
+                                                        *row_mask,
+                                                        mode,
+                                                        spans,
+                                                        wrapper->options,
+                                                        cudf::get_default_stream(),
+                                                        cudf::get_current_device_resource_ref());
   }
   JNI_CATCH(env, );
 }
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_materializePayloadColumnsChunk(
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_HybridScanReader_materializePayloadColumnsChunk(
   JNIEnv* env, jclass, jlong handle, jlong row_mask_view_handle)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
@@ -301,15 +284,14 @@ Java_ai_rapids_cudf_HybridScanReader_materializePayloadColumnsChunk(
 }
 
 JNIEXPORT void JNICALL
-Java_ai_rapids_cudf_HybridScanReader_setupChunkingForAllColumns(
-  JNIEnv* env,
-  jclass,
-  jlong handle,
-  jlong chunk_read_limit,
-  jlong pass_read_limit,
-  jintArray j_row_groups,
-  jlongArray j_addrs,
-  jlongArray j_lens)
+Java_ai_rapids_cudf_HybridScanReader_setupChunkingForAllColumns(JNIEnv* env,
+                                                                jclass,
+                                                                jlong handle,
+                                                                jlong chunk_read_limit,
+                                                                jlong pass_read_limit,
+                                                                jintArray j_row_groups,
+                                                                jlongArray j_addrs,
+                                                                jlongArray j_lens)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", );
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", );
@@ -319,22 +301,19 @@ Java_ai_rapids_cudf_HybridScanReader_setupChunkingForAllColumns(
     auto* wrapper = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
     auto holder   = make_row_group_span(env, j_row_groups);
     auto spans    = make_device_spans(env, j_addrs, j_lens);
-    wrapper->reader->setup_chunking_for_all_columns(
-      static_cast<std::size_t>(chunk_read_limit),
-      static_cast<std::size_t>(pass_read_limit),
-      holder.span(),
-      spans,
-      wrapper->options,
-      cudf::get_default_stream(),
-      cudf::get_current_device_resource_ref());
+    wrapper->reader->setup_chunking_for_all_columns(static_cast<std::size_t>(chunk_read_limit),
+                                                    static_cast<std::size_t>(pass_read_limit),
+                                                    holder.span(),
+                                                    spans,
+                                                    wrapper->options,
+                                                    cudf::get_default_stream(),
+                                                    cudf::get_current_device_resource_ref());
   }
   JNI_CATCH(env, );
 }
 
 JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_materializeAllColumnsChunk(JNIEnv* env,
-                                                                             jclass,
-                                                                             jlong handle)
+Java_ai_rapids_cudf_HybridScanReader_materializeAllColumnsChunk(JNIEnv* env, jclass, jlong handle)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_TRY
@@ -347,10 +326,9 @@ Java_ai_rapids_cudf_HybridScanReader_materializeAllColumnsChunk(JNIEnv* env,
   JNI_CATCH(env, nullptr);
 }
 
-JNIEXPORT jboolean JNICALL
-Java_ai_rapids_cudf_HybridScanReader_hasNextTableChunk(JNIEnv* env,
-                                                                    jclass,
-                                                                    jlong handle)
+JNIEXPORT jboolean JNICALL Java_ai_rapids_cudf_HybridScanReader_hasNextTableChunk(JNIEnv* env,
+                                                                                  jclass,
+                                                                                  jlong handle)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", JNI_FALSE);
   JNI_TRY
@@ -362,8 +340,7 @@ Java_ai_rapids_cudf_HybridScanReader_hasNextTableChunk(JNIEnv* env,
   JNI_CATCH(env, JNI_FALSE);
 }
 
-JNIEXPORT jobjectArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_constructRowGroupPasses(
+JNIEXPORT jobjectArray JNICALL Java_ai_rapids_cudf_HybridScanReader_constructRowGroupPasses(
   JNIEnv* env, jclass, jlong handle, jintArray j_row_groups, jlong pass_read_limit)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);

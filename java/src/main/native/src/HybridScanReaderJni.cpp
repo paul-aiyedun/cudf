@@ -28,20 +28,20 @@ extern "C" {
 
 JNIEXPORT jlong JNICALL
 Java_ai_rapids_cudf_HybridScanReader_createFromFooter(JNIEnv* env,
-                                                                   jclass,
-                                                                   jlong footer_address,
-                                                                   jlong footer_length,
-                                                                   jlong filter_handle,
-                                                                   jobjectArray j_column_names,
-                                                                   jbooleanArray j_binary_as_str,
-                                                                   jint time_unit_type_id)
+                                                      jclass,
+                                                      jlong footer_address,
+                                                      jlong footer_length,
+                                                      jlong filter_handle,
+                                                      jobjectArray j_column_names,
+                                                      jbooleanArray j_binary_as_str,
+                                                      jint time_unit_type_id)
 {
   JNI_NULL_CHECK(env, footer_address, "footer address is null", 0);
   JNI_TRY
   {
     cudf::jni::auto_set_device(env);
-    auto opts = build_options(
-      env, filter_handle, j_column_names, j_binary_as_str, time_unit_type_id);
+    auto opts =
+      build_options(env, filter_handle, j_column_names, j_binary_as_str, time_unit_type_id);
     auto const* footer_ptr = reinterpret_cast<uint8_t const*>(footer_address);
     cudf::host_span<uint8_t const> footer_bytes{footer_ptr, static_cast<size_t>(footer_length)};
     auto wrapper = std::make_unique<hybrid_scan_reader_wrapper>(footer_bytes, std::move(opts));
@@ -50,8 +50,9 @@ Java_ai_rapids_cudf_HybridScanReader_createFromFooter(JNIEnv* env,
   JNI_CATCH(env, 0);
 }
 
-JNIEXPORT void JNICALL
-Java_ai_rapids_cudf_HybridScanReader_destroy(JNIEnv* env, jclass, jlong handle)
+JNIEXPORT void JNICALL Java_ai_rapids_cudf_HybridScanReader_destroy(JNIEnv* env,
+                                                                    jclass,
+                                                                    jlong handle)
 {
   JNI_TRY
   {
@@ -65,10 +66,9 @@ Java_ai_rapids_cudf_HybridScanReader_destroy(JNIEnv* env, jclass, jlong handle)
 // Metadata
 // ----------------------------------------------------------------------
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_pageIndexByteRange(JNIEnv* env,
-                                                                     jclass,
-                                                                     jlong handle)
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_HybridScanReader_pageIndexByteRange(JNIEnv* env,
+                                                                                     jclass,
+                                                                                     jlong handle)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_TRY
@@ -85,12 +85,8 @@ Java_ai_rapids_cudf_HybridScanReader_pageIndexByteRange(JNIEnv* env,
   JNI_CATCH(env, nullptr);
 }
 
-JNIEXPORT void JNICALL
-Java_ai_rapids_cudf_HybridScanReader_setupPageIndex(JNIEnv* env,
-                                                                 jclass,
-                                                                 jlong handle,
-                                                                 jlong buffer_address,
-                                                                 jlong buffer_length)
+JNIEXPORT void JNICALL Java_ai_rapids_cudf_HybridScanReader_setupPageIndex(
+  JNIEnv* env, jclass, jlong handle, jlong buffer_address, jlong buffer_length)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", );
   JNI_NULL_CHECK(env, buffer_address, "page index buffer is null", );
@@ -109,8 +105,9 @@ Java_ai_rapids_cudf_HybridScanReader_setupPageIndex(JNIEnv* env,
 // Row group enumeration
 // ----------------------------------------------------------------------
 
-JNIEXPORT jintArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_allRowGroups(JNIEnv* env, jclass, jlong handle)
+JNIEXPORT jintArray JNICALL Java_ai_rapids_cudf_HybridScanReader_allRowGroups(JNIEnv* env,
+                                                                              jclass,
+                                                                              jlong handle)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_TRY
@@ -123,11 +120,8 @@ Java_ai_rapids_cudf_HybridScanReader_allRowGroups(JNIEnv* env, jclass, jlong han
   JNI_CATCH(env, nullptr);
 }
 
-JNIEXPORT jlong JNICALL
-Java_ai_rapids_cudf_HybridScanReader_totalRowsInRowGroups(JNIEnv* env,
-                                                                       jclass,
-                                                                       jlong handle,
-                                                                       jintArray j_row_groups)
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_HybridScanReader_totalRowsInRowGroups(
+  JNIEnv* env, jclass, jlong handle, jintArray j_row_groups)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", 0);
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", 0);
@@ -142,10 +136,9 @@ Java_ai_rapids_cudf_HybridScanReader_totalRowsInRowGroups(JNIEnv* env,
   JNI_CATCH(env, 0);
 }
 
-JNIEXPORT void JNICALL
-Java_ai_rapids_cudf_HybridScanReader_resetColumnSelection(JNIEnv* env,
-                                                                       jclass,
-                                                                       jlong handle)
+JNIEXPORT void JNICALL Java_ai_rapids_cudf_HybridScanReader_resetColumnSelection(JNIEnv* env,
+                                                                                 jclass,
+                                                                                 jlong handle)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", );
   JNI_TRY
@@ -161,11 +154,8 @@ Java_ai_rapids_cudf_HybridScanReader_resetColumnSelection(JNIEnv* env,
 // Filtering
 // ----------------------------------------------------------------------
 
-JNIEXPORT jintArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_filterRowGroupsWithStats(JNIEnv* env,
-                                                                           jclass,
-                                                                           jlong handle,
-                                                                           jintArray j_row_groups)
+JNIEXPORT jintArray JNICALL Java_ai_rapids_cudf_HybridScanReader_filterRowGroupsWithStats(
+  JNIEnv* env, jclass, jlong handle, jintArray j_row_groups)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", nullptr);
@@ -181,8 +171,7 @@ Java_ai_rapids_cudf_HybridScanReader_filterRowGroupsWithStats(JNIEnv* env,
   JNI_CATCH(env, nullptr);
 }
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_secondaryFiltersByteRanges(
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_HybridScanReader_secondaryFiltersByteRanges(
   JNIEnv* env, jclass, jlong handle, jintArray j_row_groups)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
@@ -215,14 +204,8 @@ Java_ai_rapids_cudf_HybridScanReader_secondaryFiltersByteRanges(
   JNI_CATCH(env, nullptr);
 }
 
-JNIEXPORT jintArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_filterRowGroupsWithDictionaryPages(
-  JNIEnv* env,
-  jclass,
-  jlong handle,
-  jlongArray j_addrs,
-  jlongArray j_lens,
-  jintArray j_row_groups)
+JNIEXPORT jintArray JNICALL Java_ai_rapids_cudf_HybridScanReader_filterRowGroupsWithDictionaryPages(
+  JNIEnv* env, jclass, jlong handle, jlongArray j_addrs, jlongArray j_lens, jintArray j_row_groups)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", nullptr);
@@ -243,8 +226,7 @@ Java_ai_rapids_cudf_HybridScanReader_filterRowGroupsWithDictionaryPages(
 // Byte ranges
 // ----------------------------------------------------------------------
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_filterColumnChunksByteRanges(
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_HybridScanReader_filterColumnChunksByteRanges(
   JNIEnv* env, jclass, jlong handle, jintArray j_row_groups)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
@@ -261,8 +243,7 @@ Java_ai_rapids_cudf_HybridScanReader_filterColumnChunksByteRanges(
   JNI_CATCH(env, nullptr);
 }
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_payloadColumnChunksByteRanges(
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_HybridScanReader_payloadColumnChunksByteRanges(
   JNIEnv* env, jclass, jlong handle, jintArray j_row_groups)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
@@ -279,11 +260,8 @@ Java_ai_rapids_cudf_HybridScanReader_payloadColumnChunksByteRanges(
   JNI_CATCH(env, nullptr);
 }
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_allColumnChunksByteRanges(JNIEnv* env,
-                                                                            jclass,
-                                                                            jlong handle,
-                                                                            jintArray j_row_groups)
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_HybridScanReader_allColumnChunksByteRanges(
+  JNIEnv* env, jclass, jlong handle, jintArray j_row_groups)
 {
   JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
   JNI_NULL_CHECK(env, j_row_groups, "row groups is null", nullptr);
@@ -292,8 +270,7 @@ Java_ai_rapids_cudf_HybridScanReader_allColumnChunksByteRanges(JNIEnv* env,
     cudf::jni::auto_set_device(env);
     auto* wrapper = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
     auto holder   = make_row_group_span(env, j_row_groups);
-    auto ranges =
-      wrapper->reader->all_column_chunks_byte_ranges(holder.span(), wrapper->options);
+    auto ranges   = wrapper->reader->all_column_chunks_byte_ranges(holder.span(), wrapper->options);
     return ranges_to_jlong_array(env, ranges);
   }
   JNI_CATCH(env, nullptr);

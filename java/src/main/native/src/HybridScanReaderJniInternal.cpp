@@ -4,7 +4,6 @@
  */
 
 #include "hybrid_scan_jni_internal.hpp"
-
 #include "jni_compiled_expr.hpp"
 
 #include <cudf/utilities/error.hpp>
@@ -102,16 +101,13 @@ cudf::io::parquet_reader_options build_options(JNIEnv* env,
     binary_as_str.cancel();
   }
 
-  auto opts =
-    builder
-      .convert_strings_to_categories(false)
-      .timestamp_type(cudf::data_type(static_cast<cudf::type_id>(time_unit_type_id)))
-      .ignore_missing_columns(true)
-      .build();
+  auto opts = builder.convert_strings_to_categories(false)
+                .timestamp_type(cudf::data_type(static_cast<cudf::type_id>(time_unit_type_id)))
+                .ignore_missing_columns(true)
+                .build();
 
   if (filter_handle != 0) {
-    auto const* filter_expr =
-      reinterpret_cast<cudf::jni::ast::compiled_expr const*>(filter_handle);
+    auto const* filter_expr = reinterpret_cast<cudf::jni::ast::compiled_expr const*>(filter_handle);
     opts.set_filter(filter_expr->get_top_expression());
   }
 

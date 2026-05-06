@@ -245,30 +245,6 @@ Java_ai_rapids_cudf_HybridScanReader_secondaryFiltersByteRanges(
 }
 
 JNIEXPORT jintArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_filterRowGroupsWithBloomFilters(
-  JNIEnv* env,
-  jclass,
-  jlong handle,
-  jlongArray j_addrs,
-  jlongArray j_lens,
-  jintArray j_row_groups)
-{
-  JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
-  JNI_NULL_CHECK(env, j_row_groups, "row groups is null", nullptr);
-  JNI_TRY
-  {
-    cudf::jni::auto_set_device(env);
-    auto* wrapper = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
-    auto holder   = make_row_group_span(env, j_row_groups);
-    auto spans    = make_device_spans(env, j_addrs, j_lens);
-    auto filtered = wrapper->reader->filter_row_groups_with_bloom_filters(
-      spans, holder.span(), wrapper->options, cudf::get_default_stream());
-    return sizes_to_jint_array(env, filtered);
-  }
-  JNI_CATCH(env, nullptr);
-}
-
-JNIEXPORT jintArray JNICALL
 Java_ai_rapids_cudf_HybridScanReader_filterRowGroupsWithDictionaryPages(
   JNIEnv* env,
   jclass,

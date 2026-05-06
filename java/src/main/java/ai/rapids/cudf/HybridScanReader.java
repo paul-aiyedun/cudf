@@ -266,22 +266,12 @@ public class HybridScanReader implements AutoCloseable {
     return new SecondaryFilterRanges(bloom, dict);
   }
 
-  /** Filter row groups using column-chunk bloom filters loaded into device memory. */
-  public int[] filterRowGroupsWithBloomFilters(DeviceMemoryBuffer[] bloomFilterData,
-                                               int[] rowGroupIndices) {
-    assertNotClosed();
-    requireNonNullRowGroups(rowGroupIndices);
-    if (bloomFilterData == null) {
-      throw new IllegalArgumentException("bloomFilterData must not be null");
-    }
-    long[] addrs = new long[bloomFilterData.length];
-    long[] lens = new long[bloomFilterData.length];
-    for (int i = 0; i < bloomFilterData.length; i++) {
-      addrs[i] = bloomFilterData[i].getAddress();
-      lens[i] = bloomFilterData[i].getLength();
-    }
-    return filterRowGroupsWithBloomFilters(cleaner.nativeHandle, addrs, lens, rowGroupIndices);
-  }
+  // TODO: add filterRowGroupsWithBloomFilters(int[] rowGroups) once the Java Parquet
+  //       writer can emit bloom filter blocks. The C++ writer exposes this via
+  //       parquet_writer_options::set_column_chunks_bloom_filter_params, which has not
+  //       yet been surfaced in ParquetWriterOptions / TableJni.cpp. Until then, any
+  //       file written from Java contains no bloom filter blocks and the method would
+  //       always return the input row groups unchanged.
 
   /** Filter row groups using column-chunk dictionary pages loaded into device memory. */
   public int[] filterRowGroupsWithDictionaryPages(DeviceMemoryBuffer[] dictionaryPageData,
@@ -662,10 +652,6 @@ public class HybridScanReader implements AutoCloseable {
   // Filtering
   private static native int[] filterRowGroupsWithStats(long handle, int[] rowGroupIndices);
   private static native long[] secondaryFiltersByteRanges(long handle, int[] rowGroupIndices);
-  private static native int[] filterRowGroupsWithBloomFilters(long handle,
-                                                              long[] bufferAddresses,
-                                                              long[] bufferLengths,
-                                                              int[] rowGroupIndices);
   private static native int[] filterRowGroupsWithDictionaryPages(long handle,
                                                                  long[] bufferAddresses,
                                                                  long[] bufferLengths,

@@ -278,6 +278,10 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
+  // TODO: add testFilterRowGroupsWithBloomFilters once ParquetWriterOptions exposes
+  //       bloom filter writing (set_column_chunks_bloom_filter_params). See
+  //       HybridScanReader.java for details.
+
   // --------------------------------------------------------------------
   // Tests: byte ranges
   // --------------------------------------------------------------------

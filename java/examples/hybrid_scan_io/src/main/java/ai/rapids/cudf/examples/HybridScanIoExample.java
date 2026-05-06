@@ -25,9 +25,7 @@ import java.io.File;
 import java.io.IOException;
 
 /**
- * Java equivalent of {@code cpp/examples/hybrid_scan_io/hybrid_scan_io.cpp}.
- *
- * <p>Reads a Parquet file three times for an apples-to-apples comparison of the legacy
+ * Reads a Parquet file three times for an apples-to-apples comparison of the legacy
  * reader and two flavours of the experimental {@link HybridScanReader}:
  * <ol>
  *   <li>{@link Table#readParquet(ParquetOptions, File)} (legacy) — read all projected
@@ -40,7 +38,7 @@ import java.io.IOException;
  * </ol>
  * Each scenario is implemented in its own helper method and tagged with a labelled-bullet
  * prefix in stdout: {@code [Setup]}, {@code [Legacy]}, {@code [Hybrid]}, and
- * {@code [Hybrid w PageIndex]}.
+ * {@code [Hybrid: PageIndex Filtering]}.
  *
  * <p>Usage:
  * <pre>
@@ -244,43 +242,47 @@ public final class HybridScanIoExample {
                                              int literalValue, long legacyTotal)
       throws IOException {
     System.out.println(
-        "[Hybrid w PageIndex] Reading full file (need page index bytes alongside chunks)...");
+        "[Hybrid: PageIndex Filtering] Reading full file"
+            + " (need page index bytes alongside chunks)...");
     long t = System.nanoTime();
     try (HostMemoryBuffer file = Util.readFileToHostBuffer(path);
          HostMemoryBuffer footer = Util.extractFooter(file);
          HybridScanReader reader = new HybridScanReader(footer, readOpts, filter)) {
-      System.out.printf("[Hybrid w PageIndex] Opened HybridScanReader; footer is %d bytes.%n",
+      System.out.printf(
+          "[Hybrid: PageIndex Filtering] Opened HybridScanReader; footer is %d bytes.%n",
           footer.getLength());
 
       ByteRange piRange = reader.pageIndexByteRange();
       if (piRange.size() == 0) {
         System.out.println(
-            "[Hybrid w PageIndex] File has no page index; skipping this variant.");
+            "[Hybrid: PageIndex Filtering] File has no page index; skipping this variant.");
         return;
       }
       try (HostMemoryBuffer pi = file.slice(piRange.offset(), piRange.size())) {
         reader.setupPageIndex(pi);
       }
-      System.out.printf("[Hybrid w PageIndex] Loaded page index (%d bytes).%n", piRange.size());
+      System.out.printf(
+          "[Hybrid: PageIndex Filtering] Loaded page index (%d bytes).%n", piRange.size());
 
       int[] all = reader.allRowGroups();
       int[] survived = reader.filterRowGroupsWithStats(all);
       System.out.printf(
-          "[Hybrid w PageIndex] Stats-based row-group pruning: %d -> %d row groups survive.%n",
+          "[Hybrid: PageIndex Filtering] Stats-based row-group pruning:"
+              + " %d -> %d row groups survive.%n",
           all.length, survived.length);
       if (survived.length == 0) {
         System.out.println(
-            "[Hybrid w PageIndex] All row groups pruned by statistics; nothing to read.");
+            "[Hybrid: PageIndex Filtering] All row groups pruned by statistics; nothing to read.");
         return;
       }
 
       ByteRange[] filterRanges  = reader.filterColumnChunksByteRanges(survived);
       ByteRange[] payloadRanges = reader.payloadColumnChunksByteRanges(survived);
       System.out.printf(
-          "[Hybrid w PageIndex] Copying %d filter column byte range(s) (%s) to device.%n",
+          "[Hybrid: PageIndex Filtering] Copying %d filter column byte range(s) (%s) to device.%n",
           filterRanges.length, columnName);
       System.out.printf(
-          "[Hybrid w PageIndex] Copying %d payload column byte range(s) to device.%n",
+          "[Hybrid: PageIndex Filtering] Copying %d payload column byte range(s) to device.%n",
           payloadRanges.length);
 
       DeviceMemoryBuffer[] filterCols = null;
@@ -295,22 +297,26 @@ public final class HybridScanIoExample {
              Table pTable = reader.materializePayloadColumns(survived, payloadCols,
                  fr.rowMask(), UseDataPageMask.YES)) {
           hybridRows = pTable.getRowCount();
+          long rowsInSurvivedGroups = fr.rowMask().getRowCount();
+          long rowsSkipped = rowsInSurvivedGroups - hybridRows;
           System.out.printf(
-              "[Hybrid w PageIndex] Materialised filter columns (page-index seeded mask):"
-                  + " %d rows survive %s > %d.%n",
-              fr.table().getRowCount(), columnName, literalValue);
+              "[Hybrid: PageIndex Filtering] Row-group survivors: %,d rows available"
+                  + " (%d group(s) × rows).%n",
+              rowsInSurvivedGroups, survived.length);
           System.out.printf(
-              "[Hybrid w PageIndex] Materialised payload columns aligned to row mask: %d rows.%n",
-              hybridRows);
+              "[Hybrid: PageIndex Filtering] Page-index + filter: %,d rows skipped,"
+                  + " %,d rows survive %s > %d.%n",
+              rowsSkipped, hybridRows, columnName, literalValue);
         }
       } finally {
         Util.closeAll(filterCols);
         Util.closeAll(payloadCols);
       }
       long ms = (System.nanoTime() - t) / 1_000_000L;
-      System.out.printf("[Hybrid w PageIndex] Total: %d / %d rows survive.%n",
+      System.out.printf(
+          "[Hybrid: PageIndex Filtering] Total: %,d / %,d rows survive.%n",
           hybridRows, legacyTotal);
-      System.out.printf("[Hybrid w PageIndex] Processing time: %d ms.%n", ms);
+      System.out.printf("[Hybrid: PageIndex Filtering] Processing time: %d ms.%n", ms);
     }
   }
 }

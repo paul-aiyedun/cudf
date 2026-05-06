@@ -155,7 +155,7 @@ fi
 # ── stage 1: generate sample data ─────────────────────────────────────────
 banner "Stage 1 — Generate sample Parquet file"
 step "Output: ${DATA_FILE}"
-step "Schema: id INT, zip_code INT, num_units INT  |  3 row groups x 1000 rows"
+step "Schema: id INT, zip_code INT, num_units INT  |  5 row groups x 50,000 rows"
 mvn ${MVN_FLAGS} exec:java \
     -Dexec.mainClass=ai.rapids.cudf.examples.GenerateSampleParquetFileMain \
     -Dexec.args="${DATA_FILE}"
@@ -163,11 +163,12 @@ echo "✔  Sample data written."
 
 # ── stage 2: HybridScanIoExample ──────────────────────────────────────────
 banner "Stage 2 — HybridScanIoExample (legacy vs hybrid-scan two-step)"
-step "Filter: zip_code > 150000"
+step "Filter: zip_code > 145000"
 step "Compares the legacy Table.readParquet path against the two-step hybrid scan."
+step "Includes a [Hybrid: PageIndex Filtering] variant that prunes pages via the page index."
 mvn ${MVN_FLAGS} exec:java \
     -Dexec.mainClass=ai.rapids.cudf.examples.HybridScanIoExample \
-    -Dexec.args="${DATA_FILE} zip_code 150000"
+    -Dexec.args="${DATA_FILE} zip_code 145000"
 echo "✔  HybridScanIoExample complete."
 
 # ── stage 3: HybridScanPipelineExample ────────────────────────────────────

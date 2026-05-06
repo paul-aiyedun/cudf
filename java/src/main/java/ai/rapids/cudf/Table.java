@@ -306,7 +306,7 @@ public final class Table implements AutoCloseable {
    * @param timeUnit           return type of TimeStamp in units
    */
   private static native long[] readParquet(String[] filterColumnNames, boolean[] binaryToString, String filePath,
-                                           long[] addrsAndSizes, int timeUnit, long filterHandle) throws CudfException;
+                                           long[] addrsAndSizes, int timeUnit) throws CudfException;
 
   private static native long[] readParquetFromDataSource(String[] filterColumnNames,
                                                          boolean[] binaryToString, int timeUnit,
@@ -1350,25 +1350,7 @@ public final class Table implements AutoCloseable {
    */
   public static Table readParquet(ParquetOptions opts, File path) {
     return new Table(readParquet(opts.getIncludeColumnNames(), opts.getReadBinaryAsString(),
-        path.getAbsolutePath(), null, opts.timeUnit().typeId.getNativeId(), 0));
-  }
-
-  /**
-   * Read a Parquet file with an AST filter expression pushed down to the reader.
-   *
-   * <p>The filter drives stats-based row-group pruning inside {@code read_parquet}. All rows
-   * in surviving row groups are decoded; the caller is responsible for applying
-   * {@code filter.computeColumn} + {@link Table#filter} to obtain the final filtered rows.
-   *
-   * @param opts   various parquet parsing options.
-   * @param path   the local file to read.
-   * @param filter compiled AST filter expression, or {@code null} for no pushdown.
-   * @return the file parsed as a table on the GPU.
-   */
-  public static Table readParquet(ParquetOptions opts, File path, CompiledExpression filter) {
-    return new Table(readParquet(opts.getIncludeColumnNames(), opts.getReadBinaryAsString(),
-        path.getAbsolutePath(), null, opts.timeUnit().typeId.getNativeId(),
-        filter != null ? filter.getNativeHandle() : 0));
+        path.getAbsolutePath(), null, opts.timeUnit().typeId.getNativeId()));
   }
 
   /**
@@ -1443,7 +1425,7 @@ public final class Table implements AutoCloseable {
     assert offset >= 0 && offset < buffer.length;
     long[] addrsSizes = new long[]{ buffer.getAddress() + offset, len };
     return new Table(readParquet(opts.getIncludeColumnNames(), opts.getReadBinaryAsString(),
-        null, addrsSizes, opts.timeUnit().typeId.getNativeId(), 0));
+        null, addrsSizes, opts.timeUnit().typeId.getNativeId()));
   }
 
   /**
@@ -1461,7 +1443,7 @@ public final class Table implements AutoCloseable {
       addrsSizes[(i * 2) + 1] = buffers[i].getLength();
     }
     return new Table(readParquet(opts.getIncludeColumnNames(), opts.getReadBinaryAsString(),
-        null, addrsSizes, opts.timeUnit().typeId.getNativeId(), 0));
+        null, addrsSizes, opts.timeUnit().typeId.getNativeId()));
   }
 
   /**

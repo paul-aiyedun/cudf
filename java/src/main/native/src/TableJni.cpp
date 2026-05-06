@@ -2122,8 +2122,7 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_readParquet(JNIEnv* env,
                                                                    jbooleanArray j_col_binary_read,
                                                                    jstring inputfilepath,
                                                                    jlongArray addrs_and_sizes,
-                                                                   jint unit,
-                                                                   jlong filter_handle)
+                                                                   jint unit)
 {
   JNI_NULL_CHECK(env, j_col_binary_read, "null col_binary_read", 0);
   bool read_buffer = true;
@@ -2169,11 +2168,6 @@ JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_Table_readParquet(JNIEnv* env,
         // Ignore any missing projected column(s) by default
         .ignore_missing_columns(true)
         .build();
-    if (filter_handle != 0) {
-      auto const* filter_expr =
-        reinterpret_cast<cudf::jni::ast::compiled_expr const*>(filter_handle);
-      opts.set_filter(filter_expr->get_top_expression());
-    }
     auto tbl = cudf::io::read_parquet(opts).tbl;
     n_col_binary_read.cancel();
     n_addrs_sizes.cancel();

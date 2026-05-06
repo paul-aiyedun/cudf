@@ -54,8 +54,6 @@ public final class GenerateSampleParquetFileMain {
     //   - 50,000 rows per group: cuDF's default max_page_size_rows is ~20,000 rows, so
     //     each column chunk splits into ~3 pages (20K + 20K + 10K rows), giving the
     //     page-index filter room to skip whole pages within partially-overlapping groups.
-    //     The INT32 column byte size (~200 KB per column) is well under the default
-    //     ~512 KB byte page limit, so the row limit is the binding constraint.
     int rowsPerGroup = 50_000;
     int numGroups    = 5;
     int totalRows    = rowsPerGroup * numGroups;

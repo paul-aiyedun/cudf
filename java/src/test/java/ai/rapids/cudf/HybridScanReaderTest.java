@@ -34,7 +34,7 @@ import java.util.stream.IntStream;
  * <p>Tests are organised in the same order as the public-API sections in
  * {@link HybridScanReader}: constructor, metadata, row-group enumeration, row-group
  * filtering, byte ranges, single-shot materialisation, chunked materialisation,
- * convenience methods, AST extensions, and lifecycle / error handling.
+ * AST extensions, and lifecycle / error handling.
  *
  * <p>All Parquet fixtures are generated on the fly; no pre-baked {@code .parquet} file
  * is needed.
@@ -50,28 +50,6 @@ public class HybridScanReaderTest extends CudfTestBase {
   void testNullFooterThrows() {
     assertThrows(IllegalArgumentException.class,
         () -> new HybridScanReader(null, optsForColumns("id"), null));
-  }
-
-  // --------------------------------------------------------------------
-  // Tests: parquetMetadata()
-  // --------------------------------------------------------------------
-
-  /** Verifies parquetMetadata() returns a non-null result with a plausible row count, version, and createdBy. */
-  @Test
-  void testParquetMetadataReturnsPlausibleFields(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    int rows = writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      FileMetaData md = reader.parquetMetadata();
-      assertNotNull(md);
-      assertEquals(rows, md.numRows());
-      assertTrue(md.version() == 1 || md.version() == 2,
-          "Unexpected file version: " + md.version());
-      assertNotNull(md.createdBy());
-    }
   }
 
   // --------------------------------------------------------------------
@@ -559,46 +537,6 @@ public class HybridScanReaderTest extends CudfTestBase {
         expected.add(rg);
       }
       assertEquals(expected, union, "Union of passes must equal input row groups");
-    }
-  }
-
-  // --------------------------------------------------------------------
-  // Tests: materializeFromBuffer()
-  // --------------------------------------------------------------------
-
-  /** Verifies materializeFromBuffer returns a table with all projected columns and the full row count. */
-  @Test
-  void testMaterializeFromBufferNoFilter(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    int rows = writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null);
-         Table table = reader.materializeFromBuffer(file)) {
-      assertEquals(3, table.getNumberOfColumns());
-      assertEquals(rows, table.getRowCount());
-    }
-  }
-
-  /** Verifies materializeFromBuffer returns a table whose column count and row count match Table.readParquet on the same file. */
-  @Test
-  void testMaterializeFromBufferMatchesReadParquet(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null);
-         Table hybrid = reader.materializeFromBuffer(file);
-         Table standard = Table.readParquet(
-             optsForColumns("id", "zip_code", "num_units"), pq)) {
-      assertEquals(standard.getNumberOfColumns(), hybrid.getNumberOfColumns());
-      assertEquals(standard.getRowCount(), hybrid.getRowCount());
-      for (int i = 0; i < standard.getNumberOfColumns(); i++) {
-        assertEquals(standard.getColumn(i).getType(), hybrid.getColumn(i).getType(),
-            "Column " + i + " type mismatch");
-      }
     }
   }
 

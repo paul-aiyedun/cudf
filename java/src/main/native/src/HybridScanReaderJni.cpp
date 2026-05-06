@@ -65,35 +65,6 @@ Java_ai_rapids_cudf_HybridScanReader_destroy(JNIEnv* env, jclass, jlong handle)
 // Metadata
 // ----------------------------------------------------------------------
 
-JNIEXPORT jobject JNICALL
-Java_ai_rapids_cudf_HybridScanReader_parquetMetadata(JNIEnv* env,
-                                                                  jclass,
-                                                                  jlong handle)
-{
-  JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
-  JNI_TRY
-  {
-    cudf::jni::auto_set_device(env);
-    auto* wrapper = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
-    auto md       = wrapper->reader->parquet_metadata();
-
-    jclass cls = env->FindClass("ai/rapids/cudf/FileMetaData");
-    if (cls == nullptr) { return nullptr; }
-    jmethodID ctor = env->GetMethodID(cls, "<init>", "(IJLjava/lang/String;)V");
-    if (ctor == nullptr) { return nullptr; }
-
-    jstring created_by = env->NewStringUTF(md.created_by.c_str());
-    if (created_by == nullptr) { return nullptr; }
-
-    return env->NewObject(cls,
-                          ctor,
-                          static_cast<jint>(md.version),
-                          static_cast<jlong>(md.num_rows),
-                          created_by);
-  }
-  JNI_CATCH(env, nullptr);
-}
-
 JNIEXPORT jlongArray JNICALL
 Java_ai_rapids_cudf_HybridScanReader_pageIndexByteRange(JNIEnv* env,
                                                                      jclass,
@@ -324,98 +295,6 @@ Java_ai_rapids_cudf_HybridScanReader_allColumnChunksByteRanges(JNIEnv* env,
     auto ranges =
       wrapper->reader->all_column_chunks_byte_ranges(holder.span(), wrapper->options);
     return ranges_to_jlong_array(env, ranges);
-  }
-  JNI_CATCH(env, nullptr);
-}
-
-// ----------------------------------------------------------------------
-// Convenience: full file from a single host buffer
-// ----------------------------------------------------------------------
-
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_HybridScanReader_materializeFromBuffer(JNIEnv* env,
-                                                                        jclass,
-                                                                        jlong handle,
-                                                                        jlong buffer_address,
-                                                                        jlong buffer_length)
-{
-  JNI_NULL_CHECK(env, handle, "handle is null", nullptr);
-  JNI_NULL_CHECK(env, buffer_address, "buffer address is null", nullptr);
-  JNI_TRY
-  {
-    cudf::jni::auto_set_device(env);
-    auto* wrapper        = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
-    auto const* host_ptr = reinterpret_cast<uint8_t const*>(buffer_address);
-    auto const stream    = cudf::get_default_stream();
-    auto const mr        = cudf::get_current_device_resource_ref();
-
-    auto all_rgs = wrapper->reader->all_row_groups(wrapper->options);
-    cudf::host_span<cudf::size_type const> rg_span{all_rgs};
-
-    bool const has_filter = wrapper->options.get_filter().has_value();
-
-    // Optionally fetch + materialize the filter columns first to update the row mask.
-    planned_copy_result filter_copy;
-    if (has_filter) {
-      auto filter_ranges =
-        wrapper->reader->filter_column_chunks_byte_ranges(rg_span, wrapper->options);
-      filter_copy = plan_and_copy_ranges(host_ptr, filter_ranges, stream, mr);
-    }
-
-    // Build an all-true row mask.
-    auto const total_rows = wrapper->reader->total_rows_in_row_groups(rg_span);
-    auto true_scalar      = cudf::make_fixed_width_scalar<bool>(true, stream);
-    auto row_mask         = cudf::make_column_from_scalar(*true_scalar, total_rows, stream, mr);
-    auto row_mask_view    = row_mask->mutable_view();
-
-    cudf::io::table_with_metadata filter_result;
-    if (has_filter) {
-      filter_result = wrapper->reader->materialize_filter_columns(
-        rg_span,
-        filter_copy.spans,
-        row_mask_view,
-        exp_pq::use_data_page_mask::NO,
-        wrapper->options,
-        stream,
-        mr);
-    }
-
-    // Always read payload (the C++ reader internally handles "no payload columns" gracefully).
-    auto payload_ranges =
-      wrapper->reader->payload_column_chunks_byte_ranges(rg_span, wrapper->options);
-    auto payload_copy = plan_and_copy_ranges(host_ptr, payload_ranges, stream, mr);
-
-    auto const mode = has_filter ? exp_pq::use_data_page_mask::YES
-                                 : exp_pq::use_data_page_mask::NO;
-    auto payload_result = wrapper->reader->materialize_payload_columns(
-      rg_span,
-      payload_copy.spans,
-      row_mask->view(),
-      mode,
-      wrapper->options,
-      stream,
-      mr);
-
-    // If there were no filter columns, we can return the payload table directly.
-    if (!filter_result.tbl) {
-      return cudf::jni::convert_table_for_return(env, payload_result.tbl);
-    }
-
-    // Otherwise, merge filter and payload columns in the order returned by the reader.
-    // The hybrid_scan_reader internally tracks "filter" vs "payload" but the user-visible
-    // schema is the union; for the convenience method we just append payload after filter.
-    auto filter_cols  = filter_result.tbl->release();
-    auto payload_cols = payload_result.tbl->release();
-    std::vector<std::unique_ptr<cudf::column>> merged;
-    merged.reserve(filter_cols.size() + payload_cols.size());
-    for (auto& c : filter_cols) {
-      merged.emplace_back(std::move(c));
-    }
-    for (auto& c : payload_cols) {
-      merged.emplace_back(std::move(c));
-    }
-    auto merged_table = std::make_unique<cudf::table>(std::move(merged));
-    return cudf::jni::convert_table_for_return(env, std::move(merged_table));
   }
   JNI_CATCH(env, nullptr);
 }

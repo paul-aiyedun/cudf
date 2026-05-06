@@ -170,14 +170,10 @@ public class HybridScanReader implements AutoCloseable {
   // Metadata
   // ----------------------------------------------------------------------
 
-  /**
-   * @return a snapshot of the Parquet file footer metadata. If {@link #setupPageIndex} has
-   *         been called, the returned metadata also reflects the page index.
-   */
-  public FileMetaData parquetMetadata() {
-    assertNotClosed();
-    return parquetMetadata(cleaner.nativeHandle);
-  }
+  // TODO: add parquetMetadata() once FileMetaData has stabilised as a public API type.
+  //       The C++ reader exposes hybrid_scan_reader::parquet_metadata() which returns a
+  //       cudf::io::FileMetaData. A Java-side equivalent was removed because it had no
+  //       production callers.
 
   /** @return the byte range of the page index in the Parquet file. */
   public ByteRange pageIndexByteRange() {
@@ -528,37 +524,8 @@ public class HybridScanReader implements AutoCloseable {
   }
 
   // ----------------------------------------------------------------------
-  // Convenience: fire-and-forget single-call materialization from a host file buffer
-  // ----------------------------------------------------------------------
-
-  /**
-   * Materialize the entire file from a host buffer holding the full Parquet file contents.
-   *
-   * <p>This is a fire-and-forget convenience method: it runs the full hybrid-scan pipeline
-   * (footer parse, row-group filter, two-step materialize) using sensible defaults, returning
-   * a single {@link Table}. For more control, use the explicit pipeline methods.
-   *
-   * @param fileData the full Parquet file as a host buffer
-   * @return the materialized table
-   */
-  public Table materializeFromBuffer(HostMemoryBuffer fileData) {
-    assertNotClosed();
-    if (fileData == null) {
-      throw new IllegalArgumentException("fileData must not be null");
-    }
-    long[] handles = materializeFromBuffer(cleaner.nativeHandle,
-        fileData.getAddress(), fileData.getLength());
-    return new Table(handles);
-  }
-
-  // ----------------------------------------------------------------------
   // Lifecycle
   // ----------------------------------------------------------------------
-
-  /** @return the underlying native handle. Intended for internal cudf use only. */
-  public long getNativeHandle() {
-    return cleaner.nativeHandle;
-  }
 
   @Override
   public synchronized void close() {
@@ -640,7 +607,6 @@ public class HybridScanReader implements AutoCloseable {
   private static native void destroy(long handle);
 
   // Metadata
-  private static native FileMetaData parquetMetadata(long handle);
   private static native long[] pageIndexByteRange(long handle);
   private static native void setupPageIndex(long handle, long bufferAddress, long bufferLength);
 
@@ -717,8 +683,8 @@ public class HybridScanReader implements AutoCloseable {
                                                         int[] rowGroupIndices,
                                                         long passReadLimit);
 
-  // Convenience
-  private static native long[] materializeFromBuffer(long handle,
-                                                     long bufferAddress,
-                                                     long bufferLength);
+  // TODO: add materializeFromBuffer(HostMemoryBuffer) once there is a C++-level API for it.
+  //       The previous Java implementation orchestrated the pipeline manually in JNI with no
+  //       C++ counterpart (cudf::io::parquet::experimental::hybrid_scan_reader has no
+  //       materialize_from_buffer). It was removed because it had no production callers.
 }

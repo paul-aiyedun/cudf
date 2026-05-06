@@ -13,8 +13,8 @@ import java.lang.annotation.Target;
 
 /**
  * Marks a public type whose API is still considered experimental and may change
- * without notice. Code annotated with {@code @Experimental} is not subject to the
- * cuDF Java compatibility guarantees that apply to the rest of the public API.
+ * without notice. Code annotated with {@code @Experimental} is not subject to
+ * cuDF Java compatibility guarantees.
  *
  * <p>Public nested types of an annotated type inherit the experimental status by
  * association and do not need a separate marker.

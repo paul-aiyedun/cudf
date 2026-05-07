@@ -17,6 +17,7 @@ import ai.rapids.cudf.Table;
 import ai.rapids.cudf.UseDataPageMask;
 import ai.rapids.cudf.ast.BinaryOperation;
 import ai.rapids.cudf.ast.BinaryOperator;
+import ai.rapids.cudf.ast.ColumnNameReference;
 import ai.rapids.cudf.ast.ColumnReference;
 import ai.rapids.cudf.ast.CompiledExpression;
 import ai.rapids.cudf.ast.Literal;
@@ -25,8 +26,8 @@ import java.io.File;
 import java.io.IOException;
 
 /**
- * Reads a Parquet file three times for an apples-to-apples comparison of the legacy
- * reader and two flavours of the experimental {@link HybridScanReader}:
+ * Reads a Parquet file three times for a comparison of the legacy reader
+ * and two flavours of the experimental {@link HybridScanReader}:
  * <ol>
  *   <li>{@link Table#readParquet(ParquetOptions, File)} (legacy) — read all projected
  *       columns then apply the filter on the result;</li>
@@ -70,10 +71,9 @@ public final class HybridScanIoExample {
     }
 
     // Projected columns, in the order they will appear in every materialised Table.
-    // We use this list both to build the ParquetOptions and to translate the
-    // user-supplied column NAME into a column INDEX for the AST filter (libcudf's
-    // general AST expression parser only accepts ColumnReference, not
-    // ColumnNameReference -- the latter is a hybrid-scan-reader extension).
+    // Used to build ParquetOptions and to validate that the user-supplied column name
+    // is in the projected set. The legacy path also resolves the name to an index
+    // because computeColumn on a plain Table requires positional ColumnReference.
     java.util.List<String> projected = java.util.Arrays.asList("id", "zip_code", "num_units");
     int columnIndex = projected.indexOf(columnName);
     if (columnIndex < 0) {
@@ -87,12 +87,17 @@ public final class HybridScanIoExample {
         Rmm.initialize(RmmAllocationMode.POOL, null, 512L * 1024L * 1024L);
       }
 
-      // Filter expression: <column-at-columnIndex> > <int-literal>.
-      ColumnReference colRef = new ColumnReference(columnIndex);
-      Literal lit = Literal.ofInt(literalValue);
-      BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, colRef, lit);
+      // Legacy filter: positional ColumnReference required by computeColumn on a plain Table.
+      BinaryOperation legacyExpr = new BinaryOperation(BinaryOperator.GREATER,
+          new ColumnReference(columnIndex), Literal.ofInt(literalValue));
 
-      try (CompiledExpression filter = expr.compile()) {
+      // Hybrid filter: ColumnNameReference — the recommended API for HybridScanReader,
+      // which resolves column names against the Parquet schema during materialization.
+      BinaryOperation hybridExpr = new BinaryOperation(BinaryOperator.GREATER,
+          new ColumnNameReference(columnName), Literal.ofInt(literalValue));
+
+      try (CompiledExpression legacyFilter = legacyExpr.compile();
+           CompiledExpression hybridFilter = hybridExpr.compile()) {
         // The hybrid scan reader splits the projected columns into two sets internally:
         //   * "filter columns"  — columns referenced by the filter expression
         //   * "payload columns" — projected columns that are NOT in the filter
@@ -106,11 +111,11 @@ public final class HybridScanIoExample {
         }
         ParquetOptions readOpts = optsBuilder.build();
 
-        long legacyTotal = runLegacy(path, readOpts, filter, columnName, literalValue);
+        long legacyTotal = runLegacy(path, readOpts, legacyFilter, columnName, literalValue);
         System.out.println();
-        runHybridTwoStep(path, readOpts, filter, columnName, literalValue, legacyTotal);
+        runHybridTwoStep(path, readOpts, hybridFilter, columnName, literalValue, legacyTotal);
         System.out.println();
-        runHybridWithPageIndex(path, readOpts, filter, columnName, literalValue, legacyTotal);
+        runHybridWithPageIndex(path, readOpts, hybridFilter, columnName, literalValue, legacyTotal);
       }
     } finally {
       if (Rmm.isInitialized()) {

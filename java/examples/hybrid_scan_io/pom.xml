@@ -15,10 +15,9 @@
 
     <name>cudf hybrid_scan_io examples</name>
     <description>
-        Java examples for the experimental cudf Parquet hybrid-scan reader. Mirrors the
-        layout of `cpp/examples/hybrid_scan_io/`. Requires that the parent `ai.rapids:cudf`
-        artifact has been built and installed locally (e.g. via `mvn install` from the
-        `java/` directory).
+        Java examples for the experimental cudf Parquet hybrid-scan reader. Requires
+        that the parent `ai.rapids:cudf` artifact has been built and installed
+        locally (e.g. via `mvn install` from the `java/` directory).
     </description>
 
     <dependencies>

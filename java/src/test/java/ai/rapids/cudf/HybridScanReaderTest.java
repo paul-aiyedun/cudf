@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import ai.rapids.cudf.ast.BinaryOperation;
 import ai.rapids.cudf.ast.BinaryOperator;
@@ -19,6 +20,9 @@ import ai.rapids.cudf.ast.Literal;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.File;
 import java.io.IOException;
@@ -26,23 +30,18 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 /**
  * Tests for {@link HybridScanReader}.
- *
- * <p>Tests are organised in the same order as the public API: constructor,
- * {@code pageIndexByteRange()}, {@code setupPageIndex()}, {@code allRowGroups()},
- * {@code totalRowsInRowGroups()}, {@code resetColumnSelection()},
- * {@code filterRowGroupsWithStats()}, {@code secondaryFiltersByteRanges()},
- * {@code filterRowGroupsWithDictionaryPages()}, {@code filterColumnChunksByteRanges()},
- * {@code payloadColumnChunksByteRanges()}, {@code allColumnChunksByteRanges()},
- * {@code materializeFilterColumns()}, {@code materializePayloadColumns()},
- * {@code materializeAllColumns()}, the chunked-filter pipeline, the chunked-all-columns
- * pipeline, {@code hasNextTableChunk()}, {@code constructRowGroupPasses()}, and
- * {@code close()}.
  */
 public class HybridScanReaderTest extends CudfTestBase {
+
+  private static final String[] DEFAULT_COLS = {"id", "zip_code", "num_units"};
+  private static final String[] ROW_GROUP_STATS_COLS = {"id", "zip_code"};
+  private static final int[] ALL_ROW_GROUPS = {0, 1, 2};
 
   // --------------------------------------------------------------------
   // Tests: HybridScanReader (constructor)
@@ -66,17 +65,12 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testPageIndexByteRangeContiguousAndBeforeFooter(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writePageIndexParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      long fileLength = file.getLength();
-      int footerLength = file.getInt(fileLength - 8);
+    try (OpenReader open = OpenReader.pageIndex(tmp)) {
+      long fileLength = open.file.getLength();
+      int footerLength = open.file.getInt(fileLength - 8);
       long footerStart = fileLength - 8 - footerLength;
 
-      ByteRange piRange = reader.pageIndexByteRange();
+      ByteRange piRange = open.reader.pageIndexByteRange();
       assertTrue(piRange.size() > 0,
           "COLUMN-stats file must contain a non-empty page index");
       assertTrue(piRange.offset() > 0,
@@ -93,29 +87,10 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testPageIndexByteRangeEmptyForRowGroupStats(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeRowGroupStatsParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code"), null)) {
-      ByteRange piRange = reader.pageIndexByteRange();
+    try (OpenReader open = OpenReader.rowGroupStats(tmp)) {
+      ByteRange piRange = open.reader.pageIndexByteRange();
       assertEquals(0L, piRange.size(),
           "A ROWGROUP-stats file has no page index region");
-    }
-  }
-
-  /** Verifies pageIndexByteRange() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testPageIndexByteRangeAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class, reader::pageIndexByteRange);
     }
   }
 
@@ -131,25 +106,17 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testSetupPageIndexPopulatesMetadata(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writePageIndexParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(99999);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.pageIndex(tmp).withFilter("zip_code", BinaryOperator.GREATER, 99999)) {
+      HybridScanReader reader = open.reader;
       ByteRange piRange = reader.pageIndexByteRange();
-      try (HostMemoryBuffer pi = file.slice(piRange.offset(), piRange.size())) {
+      try (HostMemoryBuffer pi = open.file.slice(piRange.offset(), piRange.size())) {
         reader.setupPageIndex(pi);
       }
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       DeviceMemoryBuffer[] payloadCols = copyRangesToDevice(
-          file, reader.payloadColumnChunksByteRanges(survived));
+          open.file, reader.payloadColumnChunksByteRanges(survived));
       try (HybridScanReader.FilterMaterializationResult fr =
                reader.materializeFilterColumns(survived, filterCols, UseDataPageMask.YES,
                    HybridScanReader.RowMaskKind.PAGE_INDEX_STATS);
@@ -164,19 +131,6 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies setupPageIndex() throws IllegalArgumentException when passed a null buffer. */
-  @Test
-  void testSetupPageIndexRejectsNull(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writePageIndexParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class, () -> reader.setupPageIndex(null));
-    }
-  }
-
   /**
    * Verifies that materializeFilterColumns(..., PAGE_INDEX_STATS) throws when invoked
    * without a prior setupPageIndex() call: the page-index metadata must be materialised
@@ -184,41 +138,17 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testPageIndexStatsRequiresSetupPageIndex(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writePageIndexParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(99999);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.pageIndex(tmp).withFilter("zip_code", BinaryOperator.GREATER, 99999)) {
+      HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       try {
         assertThrows(CudfException.class, () ->
             reader.materializeFilterColumns(survived, filterCols, UseDataPageMask.YES,
                 HybridScanReader.RowMaskKind.PAGE_INDEX_STATS));
       } finally {
         closeAll(filterCols);
-      }
-    }
-  }
-
-  /** Verifies setupPageIndex() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testSetupPageIndexAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writePageIndexParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      try (HostMemoryBuffer empty = HostMemoryBuffer.allocate(1)) {
-        assertThrows(IllegalStateException.class, () -> reader.setupPageIndex(empty));
       }
     }
   }
@@ -230,27 +160,8 @@ public class HybridScanReaderTest extends CudfTestBase {
   /** Verifies allRowGroups() returns the exact contiguous indices {0, 1, 2} for a 3-group fixture. */
   @Test
   void testAllRowGroupsReturnsExactIndices(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertArrayEquals(new int[]{0, 1, 2}, reader.allRowGroups());
-    }
-  }
-
-  /** Verifies allRowGroups() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testAllRowGroupsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class, reader::allRowGroups);
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      assertArrayEquals(ALL_ROW_GROUPS, open.reader.allRowGroups());
     }
   }
 
@@ -261,67 +172,24 @@ public class HybridScanReaderTest extends CudfTestBase {
   /** Verifies totalRowsInRowGroups() returns 3000 for all 3 groups (1000 rows × 3 groups). */
   @Test
   void testTotalRowsInRowGroupsAllGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertEquals(3000L, reader.totalRowsInRowGroups(new int[]{0, 1, 2}));
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      assertEquals(3000L, open.reader.totalRowsInRowGroups(ALL_ROW_GROUPS));
     }
   }
 
   /** Verifies totalRowsInRowGroups() returns 1000 for a single row group. */
   @Test
   void testTotalRowsInRowGroupsSingleGroup(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertEquals(1000L, reader.totalRowsInRowGroups(new int[]{0}));
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      assertEquals(1000L, open.reader.totalRowsInRowGroups(new int[]{0}));
     }
   }
 
   /** Verifies totalRowsInRowGroups() returns 2000 for the last two row groups. */
   @Test
   void testTotalRowsInRowGroupsTwoGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertEquals(2000L, reader.totalRowsInRowGroups(new int[]{1, 2}));
-    }
-  }
-
-  /** Verifies totalRowsInRowGroups() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testTotalRowsInRowGroupsRejectsNull(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class, () -> reader.totalRowsInRowGroups(null));
-    }
-  }
-
-  /** Verifies totalRowsInRowGroups() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testTotalRowsInRowGroupsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.totalRowsInRowGroups(new int[]{0}));
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      assertEquals(2000L, open.reader.totalRowsInRowGroups(new int[]{1, 2}));
     }
   }
 
@@ -336,32 +204,13 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testResetColumnSelectionRestoresFreshState(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      int[] rgs = reader.allRowGroups();
-      ByteRange[] before = reader.payloadColumnChunksByteRanges(rgs);
-      reader.resetColumnSelection();
-      ByteRange[] after = reader.payloadColumnChunksByteRanges(rgs);
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      int[] rgs = open.reader.allRowGroups();
+      ByteRange[] before = open.reader.payloadColumnChunksByteRanges(rgs);
+      open.reader.resetColumnSelection();
+      ByteRange[] after = open.reader.payloadColumnChunksByteRanges(rgs);
       assertArrayEquals(before, after,
           "resetColumnSelection() must not change which byte ranges are resolved");
-    }
-  }
-
-  /** Verifies resetColumnSelection() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testResetColumnSelectionAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class, reader::resetColumnSelection);
     }
   }
 
@@ -375,47 +224,9 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testFilterRowGroupsWithStatsExactSurvivors(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
-      int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      int[] survived = open.reader.filterRowGroupsWithStats(open.reader.allRowGroups());
       assertArrayEquals(new int[]{1, 2}, survived);
-    }
-  }
-
-  /** Verifies filterRowGroupsWithStats() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testFilterRowGroupsWithStatsRejectsNull(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.filterRowGroupsWithStats(null));
-    }
-  }
-
-  /** Verifies filterRowGroupsWithStats() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testFilterRowGroupsWithStatsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.filterRowGroupsWithStats(new int[]{0}));
     }
   }
 
@@ -430,48 +241,10 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testSecondaryFiltersByteRangesEmptyForHighCardinalityInts(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
-      SecondaryFilterRanges sfr = reader.secondaryFiltersByteRanges(reader.allRowGroups());
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(open.reader.allRowGroups());
       assertEquals(0, sfr.dictionaryPageRanges().length,
           "High-cardinality int columns must not emit dictionary pages");
-    }
-  }
-
-  /** Verifies secondaryFiltersByteRanges() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testSecondaryFiltersByteRangesRejectsNull(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.secondaryFiltersByteRanges(null));
-    }
-  }
-
-  /** Verifies secondaryFiltersByteRanges() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testSecondaryFiltersByteRangesAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.secondaryFiltersByteRanges(new int[]{0}));
     }
   }
 
@@ -486,70 +259,18 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testFilterRowGroupsWithDictionaryPagesNoDictsReturnsInputUnchanged(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(50000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
-      int[] rgs = reader.allRowGroups();
-      SecondaryFilterRanges sfr = reader.secondaryFiltersByteRanges(rgs);
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 50000)) {
+      int[] rgs = open.reader.allRowGroups();
+      SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(rgs);
       ByteRange[] dictRanges = sfr.dictionaryPageRanges();
-      DeviceMemoryBuffer[] dictBufs = copyRangesToDevice(file, dictRanges);
+      DeviceMemoryBuffer[] dictBufs = copyRangesToDevice(open.file, dictRanges);
       try {
-        int[] result = reader.filterRowGroupsWithDictionaryPages(dictBufs, rgs);
+        int[] result = open.reader.filterRowGroupsWithDictionaryPages(dictBufs, rgs);
         assertArrayEquals(rgs, result,
             "With no dictionary pages, the row-group set must be returned unchanged");
       } finally {
         closeAll(dictBufs);
       }
-    }
-  }
-
-  /** Verifies filterRowGroupsWithDictionaryPages() throws IllegalArgumentException for a null buffer array. */
-  @Test
-  void testFilterRowGroupsWithDictionaryPagesRejectsNullBuffers(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.filterRowGroupsWithDictionaryPages(null, new int[]{0}));
-    }
-  }
-
-  /** Verifies filterRowGroupsWithDictionaryPages() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testFilterRowGroupsWithDictionaryPagesRejectsNullRowGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.filterRowGroupsWithDictionaryPages(new DeviceMemoryBuffer[0], null));
-    }
-  }
-
-  /** Verifies filterRowGroupsWithDictionaryPages() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testFilterRowGroupsWithDictionaryPagesAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.filterRowGroupsWithDictionaryPages(new DeviceMemoryBuffer[0], new int[]{0}));
     }
   }
 
@@ -567,50 +288,12 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testFilterColumnChunksByteRangesOnePerGroup(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(50000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
-      ByteRange[] ranges = reader.filterColumnChunksByteRanges(reader.allRowGroups());
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 50000)) {
+      ByteRange[] ranges = open.reader.filterColumnChunksByteRanges(open.reader.allRowGroups());
       assertEquals(3, ranges.length, "1 filter column × 3 row groups");
       for (ByteRange r : ranges) {
         assertTrue(r.size() > 0, "Each filter column-chunk range must be non-empty");
       }
-    }
-  }
-
-  /** Verifies filterColumnChunksByteRanges() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testFilterColumnChunksByteRangesRejectsNull(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.filterColumnChunksByteRanges(null));
-    }
-  }
-
-  /** Verifies filterColumnChunksByteRanges() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testFilterColumnChunksByteRangesAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.filterColumnChunksByteRanges(new int[]{0}));
     }
   }
 
@@ -625,13 +308,8 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testPayloadColumnChunksByteRangesNoFilter(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      ByteRange[] ranges = reader.payloadColumnChunksByteRanges(reader.allRowGroups());
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      ByteRange[] ranges = open.reader.payloadColumnChunksByteRanges(open.reader.allRowGroups());
       assertEquals(9, ranges.length, "3 payload columns × 3 row groups");
       for (ByteRange r : ranges) {
         assertTrue(r.size() > 0);
@@ -647,47 +325,9 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testPayloadColumnChunksByteRangesWithFilter(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(50000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
-      ByteRange[] ranges = reader.payloadColumnChunksByteRanges(reader.allRowGroups());
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 50000)) {
+      ByteRange[] ranges = open.reader.payloadColumnChunksByteRanges(open.reader.allRowGroups());
       assertEquals(9, ranges.length, "3 projected columns × 3 row groups (filter column not excluded)");
-    }
-  }
-
-  /** Verifies payloadColumnChunksByteRanges() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testPayloadColumnChunksByteRangesRejectsNull(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.payloadColumnChunksByteRanges(null));
-    }
-  }
-
-  /** Verifies payloadColumnChunksByteRanges() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testPayloadColumnChunksByteRangesAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.payloadColumnChunksByteRanges(new int[]{0}));
     }
   }
 
@@ -701,46 +341,12 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testAllColumnChunksByteRangesExactCount(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      ByteRange[] ranges = reader.allColumnChunksByteRanges(reader.allRowGroups());
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      ByteRange[] ranges = open.reader.allColumnChunksByteRanges(open.reader.allRowGroups());
       assertEquals(9, ranges.length, "3 columns × 3 row groups");
       for (ByteRange r : ranges) {
         assertTrue(r.size() > 0);
       }
-    }
-  }
-
-  /** Verifies allColumnChunksByteRanges() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testAllColumnChunksByteRangesRejectsNull(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.allColumnChunksByteRanges(null));
-    }
-  }
-
-  /** Verifies allColumnChunksByteRanges() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testAllColumnChunksByteRangesAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.allColumnChunksByteRanges(new int[]{0}));
     }
   }
 
@@ -756,19 +362,11 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testMaterializeFilterColumnsExactRowCount(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       try (HybridScanReader.FilterMaterializationResult fr =
                reader.materializeFilterColumns(survived, filterCols, UseDataPageMask.NO,
                    HybridScanReader.RowMaskKind.ALL_TRUE)) {
@@ -777,37 +375,6 @@ public class HybridScanReaderTest extends CudfTestBase {
       } finally {
         closeAll(filterCols);
       }
-    }
-  }
-
-  /** Verifies materializeFilterColumns() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testMaterializeFilterColumnsRejectsNullRowGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.materializeFilterColumns(null, new DeviceMemoryBuffer[0],
-              UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE));
-    }
-  }
-
-  /** Verifies materializeFilterColumns() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testMaterializeFilterColumnsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.materializeFilterColumns(new int[]{0}, new DeviceMemoryBuffer[0],
-              UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE));
     }
   }
 
@@ -822,21 +389,13 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testMaterializePayloadColumnsExactRowCount(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       DeviceMemoryBuffer[] payloadCols = copyRangesToDevice(
-          file, reader.payloadColumnChunksByteRanges(survived));
+          open.file, reader.payloadColumnChunksByteRanges(survived));
       try (HybridScanReader.FilterMaterializationResult fr =
                reader.materializeFilterColumns(survived, filterCols, UseDataPageMask.NO,
                    HybridScanReader.RowMaskKind.ALL_TRUE);
@@ -851,54 +410,6 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies materializePayloadColumns() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testMaterializePayloadColumnsRejectsNullRowGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null);
-         ColumnVector dummyMask = ColumnVector.fromBooleans(true)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.materializePayloadColumns(null, new DeviceMemoryBuffer[0],
-              dummyMask, UseDataPageMask.NO));
-    }
-  }
-
-  /** Verifies materializePayloadColumns() throws IllegalArgumentException for a null row mask. */
-  @Test
-  void testMaterializePayloadColumnsRejectsNullRowMask(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.materializePayloadColumns(new int[]{0}, new DeviceMemoryBuffer[0],
-              null, UseDataPageMask.NO));
-    }
-  }
-
-  /** Verifies materializePayloadColumns() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testMaterializePayloadColumnsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         ColumnVector dummyMask = ColumnVector.fromBooleans(true)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.materializePayloadColumns(new int[]{0}, new DeviceMemoryBuffer[0],
-              dummyMask, UseDataPageMask.NO));
-    }
-  }
-
   // --------------------------------------------------------------------
   // Tests: materializeAllColumns()
   // --------------------------------------------------------------------
@@ -909,50 +420,17 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testMaterializeAllColumnsExactRowCount(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      HybridScanReader reader = open.reader;
       int[] rgs = reader.allRowGroups();
       ByteRange[] ranges = reader.allColumnChunksByteRanges(rgs);
-      DeviceMemoryBuffer[] devs = copyRangesToDevice(file, ranges);
+      DeviceMemoryBuffer[] devs = copyRangesToDevice(open.file, ranges);
       try (Table t = reader.materializeAllColumns(rgs, devs)) {
         assertEquals(3, t.getNumberOfColumns());
         assertEquals(3000L, t.getRowCount());
       } finally {
         closeAll(devs);
       }
-    }
-  }
-
-  /** Verifies materializeAllColumns() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testMaterializeAllColumnsRejectsNullRowGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.materializeAllColumns(null, new DeviceMemoryBuffer[0]));
-    }
-  }
-
-  /** Verifies materializeAllColumns() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testMaterializeAllColumnsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.materializeAllColumns(new int[]{0}, new DeviceMemoryBuffer[0]));
     }
   }
 
@@ -968,19 +446,11 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testSetupChunkingForFilterColumnsActivatesPipeline(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       try {
         reader.setupChunkingForFilterColumns(0L, 0L, survived,
             UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE, filterCols);
@@ -988,39 +458,6 @@ public class HybridScanReaderTest extends CudfTestBase {
       } finally {
         closeAll(filterCols);
       }
-    }
-  }
-
-  /** Verifies setupChunkingForFilterColumns() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testSetupChunkingForFilterColumnsRejectsNullRowGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.setupChunkingForFilterColumns(0L, 0L, null,
-              UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE,
-              new DeviceMemoryBuffer[0]));
-    }
-  }
-
-  /** Verifies setupChunkingForFilterColumns() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testSetupChunkingForFilterColumnsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.setupChunkingForFilterColumns(0L, 0L, new int[]{0},
-              UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE,
-              new DeviceMemoryBuffer[0]));
     }
   }
 
@@ -1035,19 +472,11 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testMaterializeFilterColumnsChunkExactTotal(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       try {
         reader.setupChunkingForFilterColumns(0L, 0L, survived,
             UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE, filterCols);
@@ -1073,27 +502,8 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testMaterializeFilterColumnsChunkBeforeSetupThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class, reader::materializeFilterColumnsChunk);
-    }
-  }
-
-  /** Verifies materializeFilterColumnsChunk() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testMaterializeFilterColumnsChunkAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class, reader::materializeFilterColumnsChunk);
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      assertThrows(IllegalArgumentException.class, open.reader::materializeFilterColumnsChunk);
     }
   }
 
@@ -1108,19 +518,11 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testTakeFilterRowMaskAfterChunkedRun(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       try {
         reader.setupChunkingForFilterColumns(0L, 0L, survived,
             UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE, filterCols);
@@ -1137,20 +539,6 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies takeFilterRowMask() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testTakeFilterRowMaskAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class, reader::takeFilterRowMask);
-    }
-  }
-
   // --------------------------------------------------------------------
   // Tests: setupChunkingForPayloadColumns()
   // --------------------------------------------------------------------
@@ -1161,21 +549,13 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testSetupChunkingForPayloadColumnsActivatesPipeline(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       DeviceMemoryBuffer[] payloadCols = copyRangesToDevice(
-          file, reader.payloadColumnChunksByteRanges(survived));
+          open.file, reader.payloadColumnChunksByteRanges(survived));
       try {
         reader.setupChunkingForFilterColumns(0L, 0L, survived,
             UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE, filterCols);
@@ -1194,54 +574,6 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies setupChunkingForPayloadColumns() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testSetupChunkingForPayloadColumnsRejectsNullRowGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null);
-         ColumnVector dummyMask = ColumnVector.fromBooleans(true)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.setupChunkingForPayloadColumns(0L, 0L, null, dummyMask,
-              UseDataPageMask.NO, new DeviceMemoryBuffer[0]));
-    }
-  }
-
-  /** Verifies setupChunkingForPayloadColumns() throws IllegalArgumentException for a null row mask. */
-  @Test
-  void testSetupChunkingForPayloadColumnsRejectsNullRowMask(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.setupChunkingForPayloadColumns(0L, 0L, new int[]{0}, null,
-              UseDataPageMask.NO, new DeviceMemoryBuffer[0]));
-    }
-  }
-
-  /** Verifies setupChunkingForPayloadColumns() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testSetupChunkingForPayloadColumnsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         ColumnVector dummyMask = ColumnVector.fromBooleans(true)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.setupChunkingForPayloadColumns(0L, 0L, new int[]{0}, dummyMask,
-              UseDataPageMask.NO, new DeviceMemoryBuffer[0]));
-    }
-  }
-
   // --------------------------------------------------------------------
   // Tests: materializePayloadColumnsChunk()
   // --------------------------------------------------------------------
@@ -1253,21 +585,13 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testMaterializePayloadColumnsChunkExactTotal(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    ColumnNameReference zipCol = new ColumnNameReference("zip_code");
-    Literal lit = Literal.ofInt(150000);
-    BinaryOperation expr = new BinaryOperation(BinaryOperator.GREATER, zipCol, lit);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         CompiledExpression filter = expr.compile();
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), filter)) {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
-          file, reader.filterColumnChunksByteRanges(survived));
+          open.file, reader.filterColumnChunksByteRanges(survived));
       DeviceMemoryBuffer[] payloadCols = copyRangesToDevice(
-          file, reader.payloadColumnChunksByteRanges(survived));
+          open.file, reader.payloadColumnChunksByteRanges(survived));
       try {
         reader.setupChunkingForFilterColumns(0L, 0L, survived,
             UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE, filterCols);
@@ -1292,42 +616,13 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies materializePayloadColumnsChunk() throws IllegalArgumentException for a null row mask. */
-  @Test
-  void testMaterializePayloadColumnsChunkRejectsNullRowMask(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.materializePayloadColumnsChunk(null));
-    }
-  }
-
-  /** Verifies materializePayloadColumnsChunk() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testMaterializePayloadColumnsChunkAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         ColumnVector dummyMask = ColumnVector.fromBooleans(true)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.materializePayloadColumnsChunk(dummyMask));
-    }
-  }
-
   // --------------------------------------------------------------------
   // Tests: setupChunkingForAllColumns() / materializeAllColumnsChunk()
   //
   // These two methods are tightly coupled (every meaningful scenario calls them in
-  // sequence with hasNextTableChunk() driving the loop). The integration test below
-  // exercises both together; per-method negatives are co-located.
+  // sequence with hasNextTableChunk() driving the loop). One integration test below
+  // exercises both together. Their post-close and null-argument behaviors are
+  // covered by the parameterized tests at the end of the class.
   // --------------------------------------------------------------------
 
   /**
@@ -1336,15 +631,11 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testChunkedAllColumnsExactTotal(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      HybridScanReader reader = open.reader;
       int[] rgs = reader.allRowGroups();
       ByteRange[] ranges = reader.allColumnChunksByteRanges(rgs);
-      DeviceMemoryBuffer[] devs = copyRangesToDevice(file, ranges);
+      DeviceMemoryBuffer[] devs = copyRangesToDevice(open.file, ranges);
       try {
         reader.setupChunkingForAllColumns(0L, 0L, rgs, devs);
         long totalRows = 0;
@@ -1364,49 +655,6 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies setupChunkingForAllColumns() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testSetupChunkingForAllColumnsRejectsNullRowGroups(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.setupChunkingForAllColumns(0L, 0L, null, new DeviceMemoryBuffer[0]));
-    }
-  }
-
-  /** Verifies setupChunkingForAllColumns() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testSetupChunkingForAllColumnsAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.setupChunkingForAllColumns(0L, 0L, new int[]{0}, new DeviceMemoryBuffer[0]));
-    }
-  }
-
-  /** Verifies materializeAllColumnsChunk() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testMaterializeAllColumnsChunkAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class, reader::materializeAllColumnsChunk);
-    }
-  }
-
   // --------------------------------------------------------------------
   // Tests: hasNextTableChunk()
   // --------------------------------------------------------------------
@@ -1419,15 +667,11 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testHasNextTableChunkActiveAndAfterDrain(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      HybridScanReader reader = open.reader;
       int[] rgs = reader.allRowGroups();
       DeviceMemoryBuffer[] devs = copyRangesToDevice(
-          file, reader.allColumnChunksByteRanges(rgs));
+          open.file, reader.allColumnChunksByteRanges(rgs));
       try {
         reader.setupChunkingForAllColumns(0L, 0L, rgs, devs);
         assertTrue(reader.hasNextTableChunk(), "chunking active after setup");
@@ -1441,20 +685,6 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies hasNextTableChunk() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testHasNextTableChunkAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class, reader::hasNextTableChunk);
-    }
-  }
-
   // --------------------------------------------------------------------
   // Tests: constructRowGroupPasses()
   // --------------------------------------------------------------------
@@ -1465,14 +695,9 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testConstructRowGroupPassesUnlimitedReturnsSinglePass(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      int[] all = reader.allRowGroups();
-      int[][] passes = reader.constructRowGroupPasses(all, 0L);
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      int[] all = open.reader.allRowGroups();
+      int[][] passes = open.reader.constructRowGroupPasses(all, 0L);
       assertEquals(1, passes.length, "passReadLimit = 0 must return one pass");
       assertArrayEquals(all, passes[0]);
     }
@@ -1484,14 +709,9 @@ public class HybridScanReaderTest extends CudfTestBase {
    */
   @Test
   void testConstructRowGroupPassesUnionEqualsInput(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      int[] all = reader.allRowGroups();
-      int[][] passes = reader.constructRowGroupPasses(all, 0L);
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      int[] all = open.reader.allRowGroups();
+      int[][] passes = open.reader.constructRowGroupPasses(all, 0L);
       assertTrue(passes.length >= 1, "Expected at least one pass");
       Set<Integer> union = new HashSet<>();
       for (int[] pass : passes) {
@@ -1507,35 +727,6 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies constructRowGroupPasses() throws IllegalArgumentException for a null row-group array. */
-  @Test
-  void testConstructRowGroupPassesRejectsNull(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file);
-         HybridScanReader reader = new HybridScanReader(footer,
-             optsForColumns("id", "zip_code", "num_units"), null)) {
-      assertThrows(IllegalArgumentException.class,
-          () -> reader.constructRowGroupPasses(null, 0L));
-    }
-  }
-
-  /** Verifies constructRowGroupPasses() throws IllegalStateException after the reader is closed. */
-  @Test
-  void testConstructRowGroupPassesAfterCloseThrows(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
-      reader.close();
-      assertThrows(IllegalStateException.class,
-          () -> reader.constructRowGroupPasses(new int[]{0}, 0L));
-    }
-  }
-
   // --------------------------------------------------------------------
   // Tests: close()
   // --------------------------------------------------------------------
@@ -1548,15 +739,250 @@ public class HybridScanReaderTest extends CudfTestBase {
     try (HostMemoryBuffer file = readFileToHostBuffer(pq);
          HostMemoryBuffer footer = extractFooter(file)) {
       HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns("id", "zip_code", "num_units"), null);
+          optsForColumns(DEFAULT_COLS), null);
       reader.close();
       reader.close();
     }
   }
 
   // --------------------------------------------------------------------
+  // Tests: null-argument rejection (parameterized)
+  //
+  // Every public method that accepts a non-null reference argument validates it with a
+  // Java-side null check before reaching native code. The check is uniform across the API
+  // (all throw IllegalArgumentException), so a single parameterized test exercises every
+  // method's null-arg contract. Discoverability is preserved via the {0}RejectsNull
+  // display name in the surefire report.
+  // --------------------------------------------------------------------
+
+  /** Verifies every public method rejects null arguments with IllegalArgumentException. */
+  @ParameterizedTest(name = "{0}RejectsNull")
+  @MethodSource("nullArgInvocations")
+  void testRejectsNullArg(String name, Consumer<HybridScanReader> action,
+                          @TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      assertThrows(IllegalArgumentException.class, () -> action.accept(open.reader));
+    }
+  }
+
+  static Stream<Arguments> nullArgInvocations() {
+    return Stream.of(
+        invocation("setupPageIndex", r -> r.setupPageIndex(null)),
+        invocation("totalRowsInRowGroups", r -> r.totalRowsInRowGroups(null)),
+        invocation("filterRowGroupsWithStats", r -> r.filterRowGroupsWithStats(null)),
+        invocation("secondaryFiltersByteRanges", r -> r.secondaryFiltersByteRanges(null)),
+        invocation("filterRowGroupsWithDictionaryPagesNullBuffers",
+            r -> r.filterRowGroupsWithDictionaryPages(null, new int[]{0})),
+        invocation("filterRowGroupsWithDictionaryPagesNullRowGroups",
+            r -> r.filterRowGroupsWithDictionaryPages(new DeviceMemoryBuffer[0], null)),
+        invocation("filterColumnChunksByteRanges", r -> r.filterColumnChunksByteRanges(null)),
+        invocation("payloadColumnChunksByteRanges", r -> r.payloadColumnChunksByteRanges(null)),
+        invocation("allColumnChunksByteRanges", r -> r.allColumnChunksByteRanges(null)),
+        invocation("materializeFilterColumns", r -> r.materializeFilterColumns(null,
+            new DeviceMemoryBuffer[0], UseDataPageMask.NO,
+            HybridScanReader.RowMaskKind.ALL_TRUE)),
+        invocation("materializePayloadColumnsNullRowGroups", r -> {
+          try (ColumnVector mask = ColumnVector.fromBooleans(true)) {
+            r.materializePayloadColumns(null, new DeviceMemoryBuffer[0],
+                mask, UseDataPageMask.NO);
+          }
+        }),
+        invocation("materializePayloadColumnsNullRowMask", r -> r.materializePayloadColumns(
+            new int[]{0}, new DeviceMemoryBuffer[0], null, UseDataPageMask.NO)),
+        invocation("materializeAllColumns", r -> r.materializeAllColumns(null,
+            new DeviceMemoryBuffer[0])),
+        invocation("setupChunkingForFilterColumns", r -> r.setupChunkingForFilterColumns(
+            0L, 0L, null, UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE,
+            new DeviceMemoryBuffer[0])),
+        invocation("setupChunkingForPayloadColumnsNullRowGroups", r -> {
+          try (ColumnVector mask = ColumnVector.fromBooleans(true)) {
+            r.setupChunkingForPayloadColumns(0L, 0L, null, mask, UseDataPageMask.NO,
+                new DeviceMemoryBuffer[0]);
+          }
+        }),
+        invocation("setupChunkingForPayloadColumnsNullRowMask", r ->
+            r.setupChunkingForPayloadColumns(0L, 0L, new int[]{0}, null, UseDataPageMask.NO,
+                new DeviceMemoryBuffer[0])),
+        invocation("materializePayloadColumnsChunk", r -> r.materializePayloadColumnsChunk(null)),
+        invocation("setupChunkingForAllColumns", r -> r.setupChunkingForAllColumns(
+            0L, 0L, null, new DeviceMemoryBuffer[0])),
+        invocation("constructRowGroupPasses", r -> r.constructRowGroupPasses(null, 0L))
+    );
+  }
+
+  // --------------------------------------------------------------------
+  // Tests: post-close behavior (parameterized)
+  //
+  // Every public method on HybridScanReader calls assertNotClosed() before reaching native
+  // code, which throws IllegalStateException when the reader has been closed. The contract
+  // is uniform across the API, so a single parameterized test exercises every method's
+  // post-close behavior. Discoverability is preserved via the {0}AfterCloseThrows display
+  // name in the surefire report.
+  // --------------------------------------------------------------------
+
+  /** Verifies every public method throws IllegalStateException after the reader is closed. */
+  @ParameterizedTest(name = "{0}AfterCloseThrows")
+  @MethodSource("postCloseInvocations")
+  void testAfterCloseThrows(String name, Consumer<HybridScanReader> action,
+                            @TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      open.reader.close();
+      assertThrows(IllegalStateException.class, () -> action.accept(open.reader));
+    }
+  }
+
+  static Stream<Arguments> postCloseInvocations() {
+    return Stream.of(
+        invocation("pageIndexByteRange", HybridScanReader::pageIndexByteRange),
+        invocation("setupPageIndex", r -> {
+          try (HostMemoryBuffer empty = HostMemoryBuffer.allocate(1)) {
+            r.setupPageIndex(empty);
+          }
+        }),
+        invocation("allRowGroups", HybridScanReader::allRowGroups),
+        invocation("totalRowsInRowGroups", r -> r.totalRowsInRowGroups(new int[]{0})),
+        invocation("resetColumnSelection", HybridScanReader::resetColumnSelection),
+        invocation("filterRowGroupsWithStats", r -> r.filterRowGroupsWithStats(new int[]{0})),
+        invocation("secondaryFiltersByteRanges", r -> r.secondaryFiltersByteRanges(new int[]{0})),
+        invocation("filterRowGroupsWithDictionaryPages", r ->
+            r.filterRowGroupsWithDictionaryPages(new DeviceMemoryBuffer[0], new int[]{0})),
+        invocation("filterColumnChunksByteRanges", r -> r.filterColumnChunksByteRanges(new int[]{0})),
+        invocation("payloadColumnChunksByteRanges", r -> r.payloadColumnChunksByteRanges(new int[]{0})),
+        invocation("allColumnChunksByteRanges", r -> r.allColumnChunksByteRanges(new int[]{0})),
+        invocation("materializeFilterColumns", r -> r.materializeFilterColumns(new int[]{0},
+            new DeviceMemoryBuffer[0], UseDataPageMask.NO,
+            HybridScanReader.RowMaskKind.ALL_TRUE)),
+        invocation("materializePayloadColumns", r -> {
+          try (ColumnVector mask = ColumnVector.fromBooleans(true)) {
+            r.materializePayloadColumns(new int[]{0}, new DeviceMemoryBuffer[0],
+                mask, UseDataPageMask.NO);
+          }
+        }),
+        invocation("materializeAllColumns", r -> r.materializeAllColumns(new int[]{0},
+            new DeviceMemoryBuffer[0])),
+        invocation("setupChunkingForFilterColumns", r -> r.setupChunkingForFilterColumns(
+            0L, 0L, new int[]{0}, UseDataPageMask.NO,
+            HybridScanReader.RowMaskKind.ALL_TRUE, new DeviceMemoryBuffer[0])),
+        invocation("materializeFilterColumnsChunk", HybridScanReader::materializeFilterColumnsChunk),
+        invocation("takeFilterRowMask", HybridScanReader::takeFilterRowMask),
+        invocation("setupChunkingForPayloadColumns", r -> {
+          try (ColumnVector mask = ColumnVector.fromBooleans(true)) {
+            r.setupChunkingForPayloadColumns(0L, 0L, new int[]{0}, mask, UseDataPageMask.NO,
+                new DeviceMemoryBuffer[0]);
+          }
+        }),
+        invocation("materializePayloadColumnsChunk", r -> {
+          try (ColumnVector mask = ColumnVector.fromBooleans(true)) {
+            r.materializePayloadColumnsChunk(mask);
+          }
+        }),
+        invocation("setupChunkingForAllColumns", r -> r.setupChunkingForAllColumns(
+            0L, 0L, new int[]{0}, new DeviceMemoryBuffer[0])),
+        invocation("materializeAllColumnsChunk", HybridScanReader::materializeAllColumnsChunk),
+        invocation("hasNextTableChunk", HybridScanReader::hasNextTableChunk),
+        invocation("constructRowGroupPasses", r -> r.constructRowGroupPasses(new int[]{0}, 0L))
+    );
+  }
+
+  // --------------------------------------------------------------------
   // Fixture helpers
   // --------------------------------------------------------------------
+
+  /**
+   * Bundles a Parquet fixture (file bytes + extracted footer) with an open
+   * {@link HybridScanReader} and an optional compiled filter, all under one
+   * try-with-resources lifecycle. Use the {@link #standard(Path)},
+   * {@link #pageIndex(Path)}, or {@link #rowGroupStats(Path)} factories, optionally chained
+   * with {@link #withFilter(String, BinaryOperator, int)}.
+   */
+  private static final class OpenReader implements AutoCloseable {
+    final HostMemoryBuffer file;
+    final HostMemoryBuffer footer;
+    HybridScanReader reader;
+    CompiledExpression filter;
+
+    private OpenReader(HostMemoryBuffer file, HostMemoryBuffer footer,
+                       HybridScanReader reader, CompiledExpression filter) {
+      this.file = file;
+      this.footer = footer;
+      this.reader = reader;
+      this.filter = filter;
+    }
+
+    static OpenReader standard(Path tmp) throws IOException {
+      File pq = tmp.resolve("fixture.parquet").toFile();
+      writeFixtureParquet(pq);
+      return openFromFile(pq, DEFAULT_COLS);
+    }
+
+    static OpenReader pageIndex(Path tmp) throws IOException {
+      File pq = tmp.resolve("fixture.parquet").toFile();
+      writePageIndexParquet(pq);
+      return openFromFile(pq, DEFAULT_COLS);
+    }
+
+    static OpenReader rowGroupStats(Path tmp) throws IOException {
+      File pq = tmp.resolve("fixture.parquet").toFile();
+      writeRowGroupStatsParquet(pq);
+      return openFromFile(pq, ROW_GROUP_STATS_COLS);
+    }
+
+    private static OpenReader openFromFile(File pq, String[] cols) throws IOException {
+      HostMemoryBuffer file = readFileToHostBuffer(pq);
+      HostMemoryBuffer footer = null;
+      HybridScanReader reader = null;
+      try {
+        footer = extractFooter(file);
+        reader = new HybridScanReader(footer, optsForColumns(cols), null);
+      } catch (Throwable t) {
+        if (reader != null) reader.close();
+        if (footer != null) footer.close();
+        file.close();
+        throw t;
+      }
+      return new OpenReader(file, footer, reader, null);
+    }
+
+    /**
+     * Replace the inner reader with one constructed from the same buffers and the supplied
+     * filter expression. Closes the previous reader (and any previous filter) but keeps the
+     * file/footer buffers, so the caller's try-with-resources still owns the same lifetime.
+     */
+    OpenReader withFilter(String col, BinaryOperator op, int literal) {
+      CompiledExpression newFilter = null;
+      HybridScanReader newReader = null;
+      try {
+        newFilter = new BinaryOperation(op, new ColumnNameReference(col),
+            Literal.ofInt(literal)).compile();
+        newReader = new HybridScanReader(footer, optsForColumns(DEFAULT_COLS), newFilter);
+      } catch (Throwable t) {
+        if (newReader != null) newReader.close();
+        if (newFilter != null) newFilter.close();
+        throw t;
+      }
+      if (this.filter != null) this.filter.close();
+      this.reader.close();
+      this.reader = newReader;
+      this.filter = newFilter;
+      return this;
+    }
+
+    @Override
+    public void close() {
+      Throwable err = null;
+      try { if (reader != null) reader.close(); } catch (Throwable t) { err = t; }
+      try { if (filter != null) filter.close(); } catch (Throwable t) { if (err == null) err = t; }
+      try { if (footer != null) footer.close(); } catch (Throwable t) { if (err == null) err = t; }
+      try { if (file != null) file.close(); } catch (Throwable t) { if (err == null) err = t; }
+      if (err instanceof RuntimeException) throw (RuntimeException) err;
+      if (err instanceof Error) throw (Error) err;
+      if (err != null) throw new RuntimeException(err);
+    }
+  }
+
+  private static Arguments invocation(String name, Consumer<HybridScanReader> action) {
+    return arguments(name, action);
+  }
 
   /**
    * Writes a 3-row-group Parquet file: int columns {@code id} (globally sequential),

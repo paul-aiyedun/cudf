@@ -170,11 +170,6 @@ public class HybridScanReader implements AutoCloseable {
   // Metadata
   // ----------------------------------------------------------------------
 
-  // TODO: add parquetMetadata() once FileMetaData has stabilised as a public API type.
-  //       The C++ reader exposes hybrid_scan_reader::parquet_metadata() which returns a
-  //       cudf::io::FileMetaData. A Java-side equivalent was removed because it had no
-  //       production callers.
-
   /** @return the byte range of the page index in the Parquet file. */
   public ByteRange pageIndexByteRange() {
     assertNotClosed();
@@ -682,9 +677,4 @@ public class HybridScanReader implements AutoCloseable {
   private static native int[][] constructRowGroupPasses(long handle,
                                                         int[] rowGroupIndices,
                                                         long passReadLimit);
-
-  // TODO: add materializeFromBuffer(HostMemoryBuffer) once there is a C++-level API for it.
-  //       The previous Java implementation orchestrated the pipeline manually in JNI with no
-  //       C++ counterpart (cudf::io::parquet::experimental::hybrid_scan_reader has no
-  //       materialize_from_buffer). It was removed because it had no production callers.
 }

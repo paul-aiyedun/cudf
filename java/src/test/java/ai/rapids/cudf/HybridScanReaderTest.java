@@ -29,15 +29,7 @@ import java.util.Set;
 import java.util.stream.IntStream;
 
 /**
- * End-to-end tests for {@link HybridScanReader}.
- *
- * <p>Tests are organised in the same order as the public-API sections in
- * {@link HybridScanReader}: constructor, metadata, row-group enumeration, row-group
- * filtering, byte ranges, single-shot materialisation, chunked materialisation,
- * AST extensions, and lifecycle / error handling.
- *
- * <p>All Parquet fixtures are generated on the fly; no pre-baked {@code .parquet} file
- * is needed.
+ * Unit tests for {@link HybridScanReader}.
  */
 public class HybridScanReaderTest extends CudfTestBase {
 

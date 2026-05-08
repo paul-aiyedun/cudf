@@ -28,8 +28,6 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -40,7 +38,7 @@ import java.util.stream.Stream;
 public class HybridScanReaderTest extends CudfTestBase {
 
   private static final String[] DEFAULT_COLS = {"id", "zip_code", "num_units"};
-  private static final String[] ROW_GROUP_STATS_COLS = {"id", "zip_code"};
+  private static final String[] ROW_GROUP_STATS_COLS = {"id", "zip_code", "num_units"};
   private static final int[] ALL_ROW_GROUPS = {0, 1, 2};
 
   // --------------------------------------------------------------------
@@ -102,7 +100,7 @@ public class HybridScanReaderTest extends CudfTestBase {
    * Verifies setupPageIndex() correctly populates the page-index metadata: feed it the
    * bytes returned by pageIndexByteRange(), then assert PAGE_INDEX_STATS produces the
    * exact row count expected from the fixture (group 2 alone, 5,000 rows). All 5,000
-   * rows in group 2 satisfy the filter zip_code &gt; 99,999 (zip_code 100,000–104,999).
+   * rows in group 2 satisfy the filter zip_code > 99,999 (zip_code 100,000–104,999).
    */
   @Test
   void testSetupPageIndexPopulatesMetadata(@TempDir Path tmp) throws IOException {
@@ -115,18 +113,13 @@ public class HybridScanReaderTest extends CudfTestBase {
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
       DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
           open.file, reader.filterColumnChunksByteRanges(survived));
-      DeviceMemoryBuffer[] payloadCols = copyRangesToDevice(
-          open.file, reader.payloadColumnChunksByteRanges(survived));
       try (HybridScanReader.FilterMaterializationResult fr =
                reader.materializeFilterColumns(survived, filterCols, UseDataPageMask.YES,
-                   HybridScanReader.RowMaskKind.PAGE_INDEX_STATS);
-           Table payload = reader.materializePayloadColumns(survived, payloadCols,
-               fr.rowMask(), UseDataPageMask.YES)) {
-        assertEquals(5000L, payload.getRowCount(),
+                   HybridScanReader.RowMaskKind.PAGE_INDEX_STATS)) {
+        assertEquals(5000L, fr.table().getRowCount(),
             "Group 2 (zip_code 100,000–104,999) entirely satisfies zip_code > 99,999");
       } finally {
         closeAll(filterCols);
-        closeAll(payloadCols);
       }
     }
   }
@@ -185,32 +178,11 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
-  /** Verifies totalRowsInRowGroups() returns 2000 for the last two row groups. */
+  /** Verifies totalRowsInRowGroups() returns 0 for an empty input array (spec-defined edge case). */
   @Test
-  void testTotalRowsInRowGroupsTwoGroups(@TempDir Path tmp) throws IOException {
+  void testTotalRowsInRowGroupsEmpty(@TempDir Path tmp) throws IOException {
     try (OpenReader open = OpenReader.standard(tmp)) {
-      assertEquals(2000L, open.reader.totalRowsInRowGroups(new int[]{1, 2}));
-    }
-  }
-
-  // --------------------------------------------------------------------
-  // Tests: resetColumnSelection()
-  // --------------------------------------------------------------------
-
-  /**
-   * Verifies resetColumnSelection() leaves the reader in an equivalent state: byte ranges
-   * resolved before and after the reset are identical (downstream observation, since the
-   * reset itself has no directly observable return value).
-   */
-  @Test
-  void testResetColumnSelectionRestoresFreshState(@TempDir Path tmp) throws IOException {
-    try (OpenReader open = OpenReader.standard(tmp)) {
-      int[] rgs = open.reader.allRowGroups();
-      ByteRange[] before = open.reader.payloadColumnChunksByteRanges(rgs);
-      open.reader.resetColumnSelection();
-      ByteRange[] after = open.reader.payloadColumnChunksByteRanges(rgs);
-      assertArrayEquals(before, after,
-          "resetColumnSelection() must not change which byte ranges are resolved");
+      assertEquals(0L, open.reader.totalRowsInRowGroups(new int[0]));
     }
   }
 
@@ -235,16 +207,64 @@ public class HybridScanReaderTest extends CudfTestBase {
   // --------------------------------------------------------------------
 
   /**
-   * Verifies secondaryFiltersByteRanges() returns no dictionary page ranges for a fixture
-   * with high-cardinality int columns: the cuDF Parquet writer does not emit dictionary
-   * pages for such columns, so the returned dictionary range array is empty.
+   * Verifies secondaryFiltersByteRanges() returns one non-empty dictionary-page range per
+   * row group when all three required conditions are met:
+   * <ul>
+   *   <li>The filter contains an (in)equality predicate (num_units == 2);
+   *       dictionary_literals_collector only collects literals from EQUAL/NOT_EQUAL AST nodes.</li>
+   *   <li>The fixture has a page index (COLUMN stats), so
+   *       has_page_index_and_only_dict_encoded_pages can return true.</li>
+   *   <li>The writer's ADAPTIVE dictionary policy emits dictionaries for the filter column;
+   *       num_units is low-cardinality in every row group, easily passing the
+   *       plain_data_size &gt; dict_enc_size heuristic in writer_impl.cu.</li>
+   * </ul>
+   * Result: 3 row groups × 1 dict-eligible filter col = 3 non-empty ranges.
+   */
+  @Test
+  void testSecondaryFiltersByteRangesPresentForLowCardinality(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.pageIndex(tmp).withFilter("num_units", BinaryOperator.EQUAL, 2)) {
+      SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(open.reader.allRowGroups());
+      ByteRange[] dict = sfr.dictionaryPageRanges();
+      assertEquals(3, dict.length, "3 row groups × 1 dict-eligible filter column");
+      for (ByteRange r : dict) {
+        assertTrue(r.size() > 0, "Dictionary page range must be non-empty");
+      }
+    }
+  }
+
+  /**
+   * Verifies secondaryFiltersByteRanges() returns no dictionary-page ranges for a
+   * high-cardinality int filter column even when the conditions for dictionary lookup
+   * are otherwise satisfied: the fixture has a page index (COLUMN stats) and the
+   * predicate is EQUAL. The empty result must be attributable solely to the writer's
+   * ADAPTIVE dictionary policy skipping dictionary emission for high-cardinality columns
+   * (zip_code is unique per row).
    */
   @Test
   void testSecondaryFiltersByteRangesEmptyForHighCardinalityInts(@TempDir Path tmp) throws IOException {
-    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+    try (OpenReader open = OpenReader.pageIndex(tmp).withFilter("zip_code", BinaryOperator.EQUAL, 12345)) {
       SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(open.reader.allRowGroups());
       assertEquals(0, sfr.dictionaryPageRanges().length,
-          "High-cardinality int columns must not emit dictionary pages");
+          "High-cardinality zip_code: ADAPTIVE policy skips dictionary emission "
+              + "even with page index present and an EQUAL predicate requesting it");
+    }
+  }
+
+  /**
+   * Verifies secondaryFiltersByteRanges() returns no dictionary page ranges when the file
+   * has no page index, even with all other conditions met (EQUAL predicate, low-cardinality
+   * column for which the writer's ADAPTIVE policy emits a dictionary). The C++ gate
+   * has_page_index_and_only_dict_encoded_pages requires both ColumnIndex and OffsetIndex
+   * to be present, which only COLUMN-stats files have. Without that, dict-based row-group
+   * pruning is unsound (cannot verify all pages are dict-encoded), so the function returns
+   * empty even though the dict pages physically exist in the file.
+   */
+  @Test
+  void testSecondaryFiltersByteRangesEmptyForRowGroupStats(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.rowGroupStats(tmp).withFilter("num_units", BinaryOperator.EQUAL, 2)) {
+      SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(new int[]{0});
+      assertEquals(0, sfr.dictionaryPageRanges().length,
+          "ROWGROUP stats has no page index; the C++ gate skips dict-page discovery");
     }
   }
 
@@ -253,21 +273,94 @@ public class HybridScanReaderTest extends CudfTestBase {
   // --------------------------------------------------------------------
 
   /**
-   * Verifies filterRowGroupsWithDictionaryPages() returns the input row-group set unchanged
-   * when no dictionary pages are present (high-cardinality int columns produce no
-   * dictionaries, so there is nothing to prune against).
+   * Verifies filterRowGroupsWithDictionaryPages() prunes all row groups when the equality
+   * literal is not present in any group's dictionary. With the pageIndex fixture, num_units
+   * dictionaries are {1,2} (g0), {2,3} (g1), {3,4} (g2); filtering on num_units == 5 must
+   * yield an empty surviving-group array.
    */
   @Test
-  void testFilterRowGroupsWithDictionaryPagesNoDictsReturnsInputUnchanged(@TempDir Path tmp) throws IOException {
-    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 50000)) {
+  void testFilterRowGroupsWithDictionaryPagesPrunesAllGroups(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.pageIndex(tmp).withFilter("num_units", BinaryOperator.EQUAL, 5)) {
       int[] rgs = open.reader.allRowGroups();
       SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(rgs);
-      ByteRange[] dictRanges = sfr.dictionaryPageRanges();
-      DeviceMemoryBuffer[] dictBufs = copyRangesToDevice(open.file, dictRanges);
+      DeviceMemoryBuffer[] dictBufs = copyRangesToDevice(open.file, sfr.dictionaryPageRanges());
       try {
         int[] result = open.reader.filterRowGroupsWithDictionaryPages(dictBufs, rgs);
-        assertArrayEquals(rgs, result,
-            "With no dictionary pages, the row-group set must be returned unchanged");
+        assertEquals(0, result.length,
+            "num_units == 5 is not in any group's dictionary ({1,2}, {2,3}, {3,4}); all pruned");
+      } finally {
+        closeAll(dictBufs);
+      }
+    }
+  }
+
+  /**
+   * Verifies filterRowGroupsWithDictionaryPages() returns a strict subset of input row
+   * groups when an EQUAL literal is present in some but not all groups' dictionaries. The
+   * pageIndex fixture's num_units dictionaries are {1,2} (g0), {2,3} (g1), {3,4} (g2); all
+   * three column chunks are dictionary-encoded under COLUMN stats. With filter
+   * num_units == 2, the literal is in g0 and g1 but not g2, so the result is exactly {0, 1}.
+   */
+  @Test
+  void testFilterRowGroupsWithDictionaryPagesPrunesSubsetOfGroups(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.pageIndex(tmp).withFilter("num_units", BinaryOperator.EQUAL, 2)) {
+      int[] rgs = open.reader.allRowGroups();
+      SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(rgs);
+      DeviceMemoryBuffer[] dictBufs = copyRangesToDevice(open.file, sfr.dictionaryPageRanges());
+      try {
+        int[] result = open.reader.filterRowGroupsWithDictionaryPages(dictBufs, rgs);
+        assertArrayEquals(new int[]{0, 1}, result,
+            "num_units == 2 ∈ g0 dict {1,2} and g1 dict {2,3}, ∉ g2 dict {3,4}");
+      } finally {
+        closeAll(dictBufs);
+      }
+    }
+  }
+
+  /**
+   * Verifies filterRowGroupsWithDictionaryPages() throws when the upstream
+   * secondaryFiltersByteRanges yields no dict ranges due to ADAPTIVE policy skipping dict
+   * emission on a high-cardinality column. With EQUAL on zip_code (5,000 distinct values
+   * per group), no dict pages exist, so no buffers can be supplied. The C++ CUDF_EXPECTS
+   * at prepare_dictionaries enforces buffers.size() == row_groups × dict-eligible cols.
+   */
+  @Test
+  void testFilterRowGroupsWithDictionaryPagesThrowsForHighCardinality(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.pageIndex(tmp).withFilter("zip_code", BinaryOperator.EQUAL, 12345)) {
+      int[] rgs = open.reader.allRowGroups();
+      SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(rgs);
+      DeviceMemoryBuffer[] dictBufs = copyRangesToDevice(open.file, sfr.dictionaryPageRanges());
+      try {
+        assertEquals(0, dictBufs.length, "ADAPTIVE skips dict for high-cardinality zip_code");
+        assertThrows(CudfException.class,
+            () -> open.reader.filterRowGroupsWithDictionaryPages(dictBufs, rgs),
+            "CUDF_EXPECTS at prepare_dictionaries: 0 buffers != 3 row groups × 1 dict-eligible col");
+      } finally {
+        closeAll(dictBufs);
+      }
+    }
+  }
+
+  /**
+   * Verifies filterRowGroupsWithDictionaryPages() throws when the upstream
+   * secondaryFiltersByteRanges yields no dict ranges due to a missing page index, even
+   * though the writer emitted dictionaries. With ROWGROUP-stats fixture + EQUAL on
+   * low-cardinality num_units, has_page_index_and_only_dict_encoded_pages is false (no
+   * ColumnIndex/OffsetIndex), so no buffers can be supplied. The C++ CUDF_EXPECTS at
+   * prepare_dictionaries fires for the same reason as the high-cardinality case but with
+   * a different upstream cause.
+   */
+  @Test
+  void testFilterRowGroupsWithDictionaryPagesThrowsWithoutPageIndex(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.rowGroupStats(tmp).withFilter("num_units", BinaryOperator.EQUAL, 2)) {
+      int[] rgs = new int[]{0};
+      SecondaryFilterRanges sfr = open.reader.secondaryFiltersByteRanges(rgs);
+      DeviceMemoryBuffer[] dictBufs = copyRangesToDevice(open.file, sfr.dictionaryPageRanges());
+      try {
+        assertEquals(0, dictBufs.length, "Without page index, no dict ranges discoverable");
+        assertThrows(CudfException.class,
+            () -> open.reader.filterRowGroupsWithDictionaryPages(dictBufs, rgs),
+            "CUDF_EXPECTS at prepare_dictionaries: 0 buffers != 1 row group × 1 dict-eligible col");
       } finally {
         closeAll(dictBufs);
       }
@@ -283,14 +376,20 @@ public class HybridScanReaderTest extends CudfTestBase {
   // --------------------------------------------------------------------
 
   /**
-   * Verifies filterColumnChunksByteRanges() returns one range per row group for the single
-   * filter column ("zip_code"): 1 column × 3 row groups = 3 ranges, each non-empty.
+   * Verifies filterColumnChunksByteRanges() returns one range per surviving row group for
+   * the single filter column ("zip_code"). With filter zip_code &gt; 150,000, group 0 (max
+   * zip 109,900) is pruned by filterRowGroupsWithStats and groups 1, 2 survive:
+   * 1 filter column × 2 surviving groups = 2 non-empty ranges. The reduction from
+   * allRowGroups (3) to survived (2) demonstrates that the method's output tracks its
+   * row-group input.
    */
   @Test
-  void testFilterColumnChunksByteRangesOnePerGroup(@TempDir Path tmp) throws IOException {
-    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 50000)) {
-      ByteRange[] ranges = open.reader.filterColumnChunksByteRanges(open.reader.allRowGroups());
-      assertEquals(3, ranges.length, "1 filter column × 3 row groups");
+  void testFilterColumnChunksByteRangesOnePerSurvivingGroup(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
+      int[] survived = open.reader.filterRowGroupsWithStats(open.reader.allRowGroups());
+      ByteRange[] ranges = open.reader.filterColumnChunksByteRanges(survived);
+      assertEquals(2, ranges.length,
+          "1 filter column × 2 surviving row groups (group 0 pruned by filterRowGroupsWithStats)");
       for (ByteRange r : ranges) {
         assertTrue(r.size() > 0, "Each filter column-chunk range must be non-empty");
       }
@@ -318,10 +417,13 @@ public class HybridScanReaderTest extends CudfTestBase {
   }
 
   /**
-   * Verifies payloadColumnChunksByteRanges() returns one range per projected column per row
-   * group regardless of whether a filter is set: 3 columns × 3 row groups = 9. The filter
-   * column is not excluded — the caller is responsible for skipping or reusing already
-   * materialized filter columns.
+   * Verifies payloadColumnChunksByteRanges() returns ranges for all projected columns when
+   * called BEFORE any filter-column operation has populated the reader's filter
+   * column-name cache (_filter_columns_names in C++). In this pre-filter-pipeline state,
+   * the C++ select_payload_columns receives an empty filter-column set and skips the
+   * filter-column exclusion step. Result: 3 projected columns × 3 row groups = 9 ranges.
+   * See {@link #testPayloadColumnChunksByteRangesAfterFilterColumnsCall} for the
+   * post-pipeline contract (filter column excluded → 6 ranges).
    */
   @Test
   void testPayloadColumnChunksByteRangesWithFilter(@TempDir Path tmp) throws IOException {
@@ -331,19 +433,51 @@ public class HybridScanReaderTest extends CudfTestBase {
     }
   }
 
+  /**
+   * Verifies payloadColumnChunksByteRanges() excludes the filter column when called AFTER
+   * filterColumnChunksByteRanges has populated _filter_columns_names. This is the typical
+   * pipeline order (filter columns resolved first, materialized, then payload columns
+   * resolved for the surviving rows). With filter zip_code &gt; 50,000, _filter_columns_names
+   * = {"zip_code"} after the first call; payloadColumnChunksByteRanges then returns ranges
+   * for {id, num_units} only: 2 cols × 3 row groups = 6 non-empty ranges.
+   */
+  @Test
+  void testPayloadColumnChunksByteRangesAfterFilterColumnsCall(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 50000)) {
+      int[] rgs = open.reader.allRowGroups();
+      open.reader.filterColumnChunksByteRanges(rgs);
+      ByteRange[] ranges = open.reader.payloadColumnChunksByteRanges(rgs);
+      assertEquals(6, ranges.length,
+          "After filterColumnChunksByteRanges populates _filter_columns_names, "
+              + "the filter column zip_code is excluded: 2 cols × 3 row groups");
+      for (ByteRange r : ranges) {
+        assertTrue(r.size() > 0);
+      }
+    }
+  }
+
   // --------------------------------------------------------------------
   // Tests: allColumnChunksByteRanges()
   // --------------------------------------------------------------------
 
   /**
-   * Verifies allColumnChunksByteRanges() returns one range per projected column per row group:
-   * 3 columns × 3 row groups = 9 non-empty ranges.
+   * Verifies allColumnChunksByteRanges() includes all projected columns even after the
+   * filter pipeline has populated _filter_columns_names. The C++ select_columns(ALL_COLUMNS)
+   * never consults the filter-column cache, so the filter column zip_code is NOT excluded —
+   * a deliberate contrast with payloadColumnChunksByteRanges, which DOES exclude in the
+   * same state (see testPayloadColumnChunksByteRangesAfterFilterColumnsCall returning 6).
+   * Result: 3 cols × 3 row groups = 9 non-empty ranges; the post-pipeline state implies
+   * the no-filter state for this method.
    */
   @Test
   void testAllColumnChunksByteRangesExactCount(@TempDir Path tmp) throws IOException {
-    try (OpenReader open = OpenReader.standard(tmp)) {
-      ByteRange[] ranges = open.reader.allColumnChunksByteRanges(open.reader.allRowGroups());
-      assertEquals(9, ranges.length, "3 columns × 3 row groups");
+    try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 50000)) {
+      HybridScanReader reader = open.reader;
+      int[] rgs = reader.allRowGroups();
+      reader.filterColumnChunksByteRanges(rgs);
+      ByteRange[] ranges = reader.allColumnChunksByteRanges(rgs);
+      assertEquals(9, ranges.length,
+          "All 3 columns × 3 row groups; filter column NOT excluded (unlike payload).");
       for (ByteRange r : ranges) {
         assertTrue(r.size() > 0);
       }
@@ -468,7 +602,9 @@ public class HybridScanReaderTest extends CudfTestBase {
   /**
    * Verifies materializeFilterColumnsChunk() drains the exact expected row count when
    * chained with setupChunkingForFilterColumns(): 1599 rows (filter zip_code &gt; 150,000
-   * survives 599 + 1000 rows from groups 1+2).
+   * survives 599 + 1000 rows from groups 1+2). Also asserts the post-drain row mask:
+   * setup establishes length 2000 (preserved by drain), and drain refines per-row
+   * truth so the final true-count = 1599.
    */
   @Test
   void testMaterializeFilterColumnsChunkExactTotal(@TempDir Path tmp) throws IOException {
@@ -486,9 +622,14 @@ public class HybridScanReaderTest extends CudfTestBase {
             total += chunk.getRowCount();
           }
         }
-        reader.takeFilterRowMask().close();
         assertEquals(1599L, total,
             "Filter chunks contain only the rows that survive the filter expression");
+        try (ColumnVector rowMask = reader.takeFilterRowMask()) {
+          assertEquals(2000L, rowMask.getRowCount(),
+              "Drain does not change mask length");
+          assertEquals(1599L, countTrue(rowMask),
+              "After drain, true-count = surviving row count");
+        }
       } finally {
         closeAll(filterCols);
       }
@@ -512,12 +653,13 @@ public class HybridScanReaderTest extends CudfTestBase {
   // --------------------------------------------------------------------
 
   /**
-   * Verifies takeFilterRowMask() returns a row mask whose length equals the total input row
-   * count of the surviving row groups (2,000 = 1,000 × 2 surviving groups), after the
-   * chunked filter pipeline has been drained.
+   * Verifies takeFilterRowMask() exposes the all-true mask immediately after setup, before
+   * any chunks have been materialized. The mask is fully constructed by build_all_true_row_mask
+   * at setup time: length = total input rows in surviving row groups, all entries = true.
+   * For survived = {1, 2}: length = 2 × 1000 = 2000, true-count = 2000.
    */
   @Test
-  void testTakeFilterRowMaskAfterChunkedRun(@TempDir Path tmp) throws IOException {
+  void testTakeFilterRowMaskAllTrueExposesPreallocatedMask(@TempDir Path tmp) throws IOException {
     try (OpenReader open = OpenReader.standard(tmp).withFilter("zip_code", BinaryOperator.GREATER, 150000)) {
       HybridScanReader reader = open.reader;
       int[] survived = reader.filterRowGroupsWithStats(reader.allRowGroups());
@@ -526,12 +668,44 @@ public class HybridScanReaderTest extends CudfTestBase {
       try {
         reader.setupChunkingForFilterColumns(0L, 0L, survived,
             UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE, filterCols);
-        while (reader.hasNextTableChunk()) {
-          reader.materializeFilterColumnsChunk().close();
-        }
         try (ColumnVector rowMask = reader.takeFilterRowMask()) {
           assertEquals(2000L, rowMask.getRowCount(),
-              "Row mask spans the input rows of surviving row groups (groups 1+2)");
+              "Mask spans input rows of surviving row groups (groups 1+2)");
+          assertEquals(2000L, countTrue(rowMask),
+              "All entries true: ALL_TRUE seed, no filter evaluation has run");
+        }
+      } finally {
+        closeAll(filterCols);
+      }
+    }
+  }
+
+  /**
+   * Verifies takeFilterRowMask() exposes the page-index-stats-pre-evaluated mask after setup,
+   * before any chunks have been materialized. By passing all 3 row groups into setup (skipping
+   * the upstream filterRowGroupsWithStats step), the page-index pre-evaluation is observable:
+   * groups 0 and 1 (max zip 4,999 and 54,999) are pruned to false; group 2 (zip 100,000+) is
+   * preserved as true. Length = 3 × 5000 = 15,000; true-count = 5,000.
+   */
+  @Test
+  void testTakeFilterRowMaskPageIndexStatsExposesPagePrunedMask(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.pageIndex(tmp).withFilter("zip_code", BinaryOperator.GREATER, 99999)) {
+      HybridScanReader reader = open.reader;
+      ByteRange piRange = reader.pageIndexByteRange();
+      try (HostMemoryBuffer pi = open.file.slice(piRange.offset(), piRange.size())) {
+        reader.setupPageIndex(pi);
+      }
+      int[] allRgs = reader.allRowGroups();
+      DeviceMemoryBuffer[] filterCols = copyRangesToDevice(
+          open.file, reader.filterColumnChunksByteRanges(allRgs));
+      try {
+        reader.setupChunkingForFilterColumns(0L, 0L, allRgs,
+            UseDataPageMask.YES, HybridScanReader.RowMaskKind.PAGE_INDEX_STATS, filterCols);
+        try (ColumnVector rowMask = reader.takeFilterRowMask()) {
+          assertEquals(15000L, rowMask.getRowCount(),
+              "Mask spans all 3 row groups: 3 × 5000 = 15,000");
+          assertEquals(5000L, countTrue(rowMask),
+              "Only group 2 (5000 rows) survives page-index pruning of zip_code > 99,999");
         }
       } finally {
         closeAll(filterCols);
@@ -559,9 +733,6 @@ public class HybridScanReaderTest extends CudfTestBase {
       try {
         reader.setupChunkingForFilterColumns(0L, 0L, survived,
             UseDataPageMask.NO, HybridScanReader.RowMaskKind.ALL_TRUE, filterCols);
-        while (reader.hasNextTableChunk()) {
-          reader.materializeFilterColumnsChunk().close();
-        }
         try (ColumnVector rowMask = reader.takeFilterRowMask()) {
           reader.setupChunkingForPayloadColumns(0L, 0L, survived,
               rowMask, UseDataPageMask.NO, payloadCols);
@@ -661,9 +832,9 @@ public class HybridScanReaderTest extends CudfTestBase {
 
   /**
    * Verifies hasNextTableChunk() reports the active lifecycle of a chunked pipeline: true
-   * after setup, then false once all chunks have been drained. hasNextTableChunk() is not a
-   * soft probe — it requires an active chunking pipeline; calling it before any setup
-   * raises a CudfException ("Chunking not yet setup") from the C++ implementation.
+   * after setup, then false once chunks have been drained. With (0L, 0L) read limits, the
+   * C++ contract guarantees a single chunk per pass, so the lifecycle is:
+   * setup → true → one materialize → false.
    */
   @Test
   void testHasNextTableChunkActiveAndAfterDrain(@TempDir Path tmp) throws IOException {
@@ -675,13 +846,25 @@ public class HybridScanReaderTest extends CudfTestBase {
       try {
         reader.setupChunkingForAllColumns(0L, 0L, rgs, devs);
         assertTrue(reader.hasNextTableChunk(), "chunking active after setup");
-        while (reader.hasNextTableChunk()) {
-          reader.materializeAllColumnsChunk().close();
-        }
-        assertFalse(reader.hasNextTableChunk(), "no further chunks after drain");
+        reader.materializeAllColumnsChunk().close();
+        assertFalse(reader.hasNextTableChunk(),
+            "(0,0) read limits emit a single chunk; iterator drained after one materialize call");
       } finally {
         closeAll(devs);
       }
+    }
+  }
+
+  /**
+   * Verifies hasNextTableChunk() throws when called before any setupChunkingFor* method has
+   * established an active pipeline. The C++ guard (CUDF_EXPECTS at hybrid_scan_impl.cpp
+   * "Chunking not yet setup") propagates to Java as a CudfException.
+   */
+  @Test
+  void testHasNextTableChunkRequiresSetupChunkingFirst(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      assertThrows(CudfException.class, () -> open.reader.hasNextTableChunk(),
+          "Pre-setup hasNextTableChunk() must throw 'Chunking not yet setup'");
     }
   }
 
@@ -704,26 +887,22 @@ public class HybridScanReaderTest extends CudfTestBase {
   }
 
   /**
-   * Verifies that the union of all row groups across all returned passes equals the input
-   * set: no row group is dropped or duplicated regardless of how passes are partitioned.
+   * Verifies constructRowGroupPasses() partitions input row groups across multiple passes,
+   * preserving order, when passReadLimit is small enough to force splitting. With
+   * passReadLimit = 1, comp_read_limit = floor(1 * 0.3) = 0, so compute_row_group_passes
+   * closes a pass at every row group boundary: {[0]}, {[1]}, {[2]}. The exact partition
+   * simultaneously verifies the multi-pass capability and that the result is covering,
+   * disjoint, and order-preserving.
    */
   @Test
-  void testConstructRowGroupPassesUnionEqualsInput(@TempDir Path tmp) throws IOException {
+  void testConstructRowGroupPassesMultiPassPartition(@TempDir Path tmp) throws IOException {
     try (OpenReader open = OpenReader.standard(tmp)) {
       int[] all = open.reader.allRowGroups();
-      int[][] passes = open.reader.constructRowGroupPasses(all, 0L);
-      assertTrue(passes.length >= 1, "Expected at least one pass");
-      Set<Integer> union = new HashSet<>();
-      for (int[] pass : passes) {
-        for (int rg : pass) {
-          union.add(rg);
-        }
-      }
-      Set<Integer> expected = new HashSet<>();
-      for (int rg : all) {
-        expected.add(rg);
-      }
-      assertEquals(expected, union, "Union of passes must equal input row groups");
+      int[][] passes = open.reader.constructRowGroupPasses(all, 1L);
+      assertEquals(3, passes.length, "passReadLimit = 1 forces each row group into its own pass");
+      assertArrayEquals(new int[]{0}, passes[0]);
+      assertArrayEquals(new int[]{1}, passes[1]);
+      assertArrayEquals(new int[]{2}, passes[2]);
     }
   }
 
@@ -731,16 +910,22 @@ public class HybridScanReaderTest extends CudfTestBase {
   // Tests: close()
   // --------------------------------------------------------------------
 
-  /** Verifies that calling close() twice on the same reader does not throw. */
+  /**
+   * Verifies close() flips the reader from operational to closed-and-rejecting state, and
+   * that subsequent close() calls are idempotent. The pre-close probe asserts the reader
+   * is usable (not just that the constructor succeeded); the post-close probe asserts that
+   * assertNotClosed() now fires; the second close() asserts the no-throw idempotency
+   * contract.
+   */
   @Test
-  void testCloseIsIdempotent(@TempDir Path tmp) throws IOException {
-    File pq = tmp.resolve("fixture.parquet").toFile();
-    writeFixtureParquet(pq);
-    try (HostMemoryBuffer file = readFileToHostBuffer(pq);
-         HostMemoryBuffer footer = extractFooter(file)) {
-      HybridScanReader reader = new HybridScanReader(footer,
-          optsForColumns(DEFAULT_COLS), null);
+  void testCloseTransitionsAndIsIdempotent(@TempDir Path tmp) throws IOException {
+    try (OpenReader open = OpenReader.standard(tmp)) {
+      HybridScanReader reader = open.reader;
+      assertArrayEquals(new int[]{0, 1, 2}, reader.allRowGroups(),
+          "Reader operational pre-close");
       reader.close();
+      assertThrows(IllegalStateException.class, reader::allRowGroups,
+          "close() flips state; further use throws");
       reader.close();
     }
   }
@@ -841,7 +1026,6 @@ public class HybridScanReaderTest extends CudfTestBase {
         }),
         invocation("allRowGroups", HybridScanReader::allRowGroups),
         invocation("totalRowsInRowGroups", r -> r.totalRowsInRowGroups(new int[]{0})),
-        invocation("resetColumnSelection", HybridScanReader::resetColumnSelection),
         invocation("filterRowGroupsWithStats", r -> r.filterRowGroupsWithStats(new int[]{0})),
         invocation("secondaryFiltersByteRanges", r -> r.secondaryFiltersByteRanges(new int[]{0})),
         invocation("filterRowGroupsWithDictionaryPages", r ->
@@ -1022,12 +1206,15 @@ public class HybridScanReaderTest extends CudfTestBase {
   /**
    * Writes a small Parquet file with {@code ROWGROUP}-level statistics: row-group min/max
    * are recorded but no page index (no {@code ColumnIndex}/{@code OffsetIndex}) is emitted.
-   * Used as the negative case for {@link #testPageIndexByteRangeEmptyForRowGroupStats}.
+   * Includes a low-cardinality {@code num_units} column ({1, 2, 3} cycle) so the writer's
+   * ADAPTIVE dictionary policy emits a dictionary; this lets tests exercise the
+   * "no page index, dict exists" path (see
+   * {@link #testSecondaryFiltersByteRangesEmptyForRowGroupStats}).
    */
   private static void writeRowGroupStatsParquet(File path) {
     int rows = 100;
     ParquetWriterOptions opts = ParquetWriterOptions.builder()
-        .withNonNullableColumns("id", "zip_code")
+        .withNonNullableColumns("id", "zip_code", "num_units")
         .withRowGroupSizeRows(rows)
         .withStatisticsFrequency(ParquetWriterOptions.StatisticsFrequency.ROWGROUP)
         .build();
@@ -1035,7 +1222,9 @@ public class HybridScanReaderTest extends CudfTestBase {
          ColumnVector id = ColumnVector.fromInts(IntStream.range(0, rows).toArray());
          ColumnVector zipCode = ColumnVector.fromInts(
              IntStream.range(0, rows).map(i -> 10000 + i).toArray());
-         Table t = new Table(id, zipCode)) {
+         ColumnVector numUnits = ColumnVector.fromInts(
+             IntStream.range(0, rows).map(i -> 1 + (i % 3)).toArray());
+         Table t = new Table(id, zipCode, numUnits)) {
       writer.write(t);
     }
   }
@@ -1049,6 +1238,13 @@ public class HybridScanReaderTest extends CudfTestBase {
    *   <li>Group 1: zip_code 50,000–54,999</li>
    *   <li>Group 2: zip_code 100,000–104,999</li>
    * </ul>
+   * Each group also has a distinct low-cardinality {@code num_units} dictionary, enabling
+   * strict-subset row-group pruning tests for {@code filterRowGroupsWithDictionaryPages}:
+   * <ul>
+   *   <li>Group 0: num_units ∈ {1, 2}</li>
+   *   <li>Group 1: num_units ∈ {2, 3}</li>
+   *   <li>Group 2: num_units ∈ {3, 4}</li>
+   * </ul>
    * 5,000 rows per group (15,000 total).
    *
    * @return total row count (15,000)
@@ -1058,6 +1254,7 @@ public class HybridScanReaderTest extends CudfTestBase {
     int numGroups = 3;
     int rows = rowsPerGroup * numGroups;
     int[] zipBases = {0, 50_000, 100_000};
+    int[][] numUnitsValues = {{1, 2}, {2, 3}, {3, 4}};
     ParquetWriterOptions opts = ParquetWriterOptions.builder()
         .withNonNullableColumns("id", "zip_code", "num_units")
         .withRowGroupSizeRows(rowsPerGroup)
@@ -1067,12 +1264,14 @@ public class HybridScanReaderTest extends CudfTestBase {
       for (int g = 0; g < numGroups; g++) {
         int start = g * rowsPerGroup;
         int zipBase = zipBases[g];
+        int[] numUnitsVals = numUnitsValues[g];
         try (ColumnVector id = ColumnVector.fromInts(
                  IntStream.range(start, start + rowsPerGroup).toArray());
              ColumnVector zipCode = ColumnVector.fromInts(
                  IntStream.range(0, rowsPerGroup).map(i -> zipBase + i).toArray());
              ColumnVector numUnits = ColumnVector.fromInts(
-                 IntStream.range(0, rowsPerGroup).map(i -> 1 + (i % 3)).toArray());
+                 IntStream.range(0, rowsPerGroup)
+                     .map(i -> numUnitsVals[i % numUnitsVals.length]).toArray());
              Table t = new Table(id, zipCode, numUnits)) {
           writer.write(t);
         }
@@ -1130,6 +1329,17 @@ public class HybridScanReaderTest extends CudfTestBase {
     if (buffers == null) return;
     for (DeviceMemoryBuffer b : buffers) {
       if (b != null) b.close();
+    }
+  }
+
+  /** Count true entries in a boolean ColumnVector by host-side iteration. */
+  private static long countTrue(ColumnVector mask) {
+    try (HostColumnVector host = mask.copyToHost()) {
+      long count = 0;
+      for (long i = 0; i < host.getRowCount(); i++) {
+        if (host.getBoolean(i)) count++;
+      }
+      return count;
     }
   }
 

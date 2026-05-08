@@ -211,15 +211,6 @@ public class HybridScanReader implements AutoCloseable {
     return totalRowsInRowGroups(cleaner.nativeHandle, rowGroupIndices);
   }
 
-  /**
-   * Reset the current column selection so subsequent calls re-resolve columns. Useful after
-   * cascading additional columns into the filter expression.
-   */
-  public void resetColumnSelection() {
-    assertNotClosed();
-    resetColumnSelection(cleaner.nativeHandle);
-  }
-
   // ----------------------------------------------------------------------
   // Row group filtering
   // ----------------------------------------------------------------------
@@ -608,7 +599,6 @@ public class HybridScanReader implements AutoCloseable {
   // Row group enumeration
   private static native int[] allRowGroups(long handle);
   private static native long totalRowsInRowGroups(long handle, int[] rowGroupIndices);
-  private static native void resetColumnSelection(long handle);
 
   // Filtering
   private static native int[] filterRowGroupsWithStats(long handle, int[] rowGroupIndices);

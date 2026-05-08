@@ -136,20 +136,6 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_HybridScanReader_totalRowsInRowGroup
   JNI_CATCH(env, 0);
 }
 
-JNIEXPORT void JNICALL Java_ai_rapids_cudf_HybridScanReader_resetColumnSelection(JNIEnv* env,
-                                                                                 jclass,
-                                                                                 jlong handle)
-{
-  JNI_NULL_CHECK(env, handle, "handle is null", );
-  JNI_TRY
-  {
-    cudf::jni::auto_set_device(env);
-    auto* wrapper = reinterpret_cast<hybrid_scan_reader_wrapper*>(handle);
-    wrapper->reader->reset_column_selection();
-  }
-  JNI_CATCH(env, );
-}
-
 // ----------------------------------------------------------------------
 // Filtering
 // ----------------------------------------------------------------------

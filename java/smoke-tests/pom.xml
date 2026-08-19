@@ -18,10 +18,10 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>17</maven.compiler.release>
         <cudf.version>26.10.0-SNAPSHOT</cudf.version>
-        <cudf.maven.repo>${user.home}/.unused-do-not-use</cudf.maven.repo>
+        <cudf.maven.repo>${user.home}/.invalid-path</cudf.maven.repo>
         <cuda.classifier>cuda12</cuda.classifier>
         <slf4j.version>1.7.30</slf4j.version>
-        <main.class>ai.rapids.cudf.smoke.SmokeTestCudf</main.class>
+        <main.class>ai.rapids.cudf.smoke_test.SmokeTestCudf</main.class>
     </properties>
 
     <dependencies>
@@ -33,12 +33,12 @@
     </dependencies>
 
     <profiles>
-        <!-- Local/artifact/home tree: -Dcudf.maven.repo=/path (default when not Central). -->
+        <!-- Local/artifact/home tree: -Dcudf.maven.repo=/path -->
         <profile>
             <id>local-maven-repo</id>
             <activation>
                 <property>
-                    <name>!cudf.smoke.central</name>
+                    <name>!cudf.smoke-test.central</name>
                 </property>
             </activation>
             <repositories>

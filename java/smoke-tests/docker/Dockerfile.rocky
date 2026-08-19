@@ -8,7 +8,7 @@ RUN dnf --enablerepo=powertools install -y \
       maven \
       ca-certificates \
  && dnf clean all \
- && ln -sfn "$(dirname $(dirname $(readlink -f $(which javac))))" /usr/lib/jvm/cudf-smoke-jdk
+ && ln -sfn "$(dirname $(dirname $(readlink -f $(which javac))))" /usr/lib/jvm/cudf-smoke-test-jdk
 
-ENV JAVA_HOME=/usr/lib/jvm/cudf-smoke-jdk
+ENV JAVA_HOME=/usr/lib/jvm/cudf-smoke-test-jdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"

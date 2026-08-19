@@ -5,7 +5,7 @@ classpath (cudf + slf4j only), the same way a consumer would depend on them.
 Use this to check that packages load and run across the RAPIDS support matrix:
 **OS × CUDA version × machine arch**.
 
-The main test is [`SmokeTestCudf`](src/main/java/ai/rapids/cudf/smoke/SmokeTestCudf.java).
+The main test is [`SmokeTestCudf`](src/main/java/ai/rapids/cudf/smoke_test/SmokeTestCudf.java).
 
 ## `run.sh` options
 
@@ -15,7 +15,7 @@ Exactly one source mode is required:
 # Local gather tree (must contain ai/rapids/cudf/)
 ./java/smoke-tests/bin/run.sh --maven-repo-dir /tmp/cudf-java-build/maven-repo
 
-# GitHub Actions gather artifact
+# GitHub Actions artifact (java-build, java-gather, or signed Maven Central bundle)
 ./java/smoke-tests/bin/run.sh \
   --artifact-url 'https://github.com/rapidsai/cudf/actions/runs/<run>/artifacts/<id>'
 
@@ -34,7 +34,7 @@ Exactly one source mode is required:
 
 | Flag | Meaning |
 |---|---|
-| `--artifact-url URL` | Fetch a java-gather artifact via [`bin/fetch_bundle.sh`](bin/fetch_bundle.sh) (authenticated `gh`). Cached under `.cache/downloads/` (or `$CUDF_JAVA_SMOKE_OUTPUT_DIR`); reused if already valid. |
+| `--artifact-url URL` | GitHub Actions artifact URL |
 | `--maven-repo-dir DIR` | Local Maven tree containing `ai/rapids/cudf/` |
 | `--use-maven-home` | Use `~/.m2/repository` |
 | `--use-maven-central` | Resolve from Maven Central (`--version` required) |
@@ -65,14 +65,3 @@ matrix:
 | `ubuntu24.04` | `nvidia/cuda:12.9.1-runtime-ubuntu24.04` | `nvidia/cuda:13.0.1-runtime-ubuntu24.04` |
 | `ubuntu26.04` | *(skipped — no official image)* | `nvidia/cuda:13.3.1-runtime-ubuntu26.04` |
 | `rockylinux8` | `nvidia/cuda:12.9.1-runtime-rockylinux8` | `nvidia/cuda:13.0.1-runtime-rockylinux8` |
-
-CUDA 12 × Ubuntu 26.04 is skipped: NVIDIA does not publish a CUDA 12
-`ubuntu26.04` base image, and [`rapidsai/ci-imgs`](https://github.com/rapidsai/ci-imgs/blob/main/matrix.yaml)
-explicitly excludes that pair.
-
-Arches: `x86_64`, `aarch64` (host arch drives the classifier list).
-
-Images under `docker/` (`Dockerfile.ubuntu`, `Dockerfile.rocky`, both accept
-`--build-arg BASE_IMAGE=...`) are built on first use and tagged
-`cudf-java-smoke:cuda<major>-<os>`. Rebuild with `docker build` / `docker rmi`
-when a Dockerfile changes.

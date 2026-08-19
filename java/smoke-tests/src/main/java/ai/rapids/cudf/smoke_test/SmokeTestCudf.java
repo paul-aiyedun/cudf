@@ -2,7 +2,7 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
-package ai.rapids.cudf.smoke;
+package ai.rapids.cudf.smoke_test;
 
 import ai.rapids.cudf.BinaryOp;
 import ai.rapids.cudf.ColumnVector;
@@ -76,13 +76,11 @@ public final class SmokeTestCudf {
   }
 
   /**
-   * Write a tiny parquet table, then open it with the DataSource-only
-   * {@link ParquetChunkedReader} ctor (chunk limit set, no pass limit). That
-   * native path calls {@code derive_pass_read_limit()} and emits
-   * {@code CUDF_LOG_WARN} - exercising the linked rapids_logger / spdlog stack
-   * without needing an external libspdlog.
+   * Parquet write/read round-trip via {@link ParquetChunkedReader}'s DataSource
+   * ctor. That path also emits {@code CUDF_LOG_WARN}, covering the linked
+   * rapids_logger / spdlog stack.
    */
-  private static void parquetChunkedLoggerSmoke() {
+  private static void parquetChunkedLoggerSmokeTest() {
     ParquetWriterOptions writeOpts = ParquetWriterOptions.builder().withColumns(false, "a").build();
     try (CollectingConsumer consumer = new CollectingConsumer()) {
       try (ColumnVector col = ColumnVector.fromInts(1, 2, 3, 4, 5);
@@ -91,10 +89,12 @@ public final class SmokeTestCudf {
         writer.write(table);
       }
       check(consumer.length() > 0, "expected non-empty parquet bytes");
+      // Non-zero chunk limit: DataSource reader derives pass limit and CUDF_LOG_WARN.
+      final long chunkReadLimit = 64 * 1024L;
       try (HostMemoryBuffer slice = consumer.buffer().slice(0, consumer.length());
            MultiBufferDataSource ds = new MultiBufferDataSource(slice);
            ParquetChunkedReader reader =
-               new ParquetChunkedReader(64 * 1024L, ParquetOptions.DEFAULT, ds)) {
+               new ParquetChunkedReader(chunkReadLimit, ParquetOptions.DEFAULT, ds)) {
         long rows = 0;
         while (reader.hasNext()) {
           try (Table chunk = reader.readChunk()) {
@@ -109,40 +109,29 @@ public final class SmokeTestCudf {
   }
 
   /**
-   * Minimal LZ4 compress/decompress round-trip via {@code ai.rapids.cudf.nvcomp}.
-   * Exercises the nvcomp symbols linked into libcudf on static-libcudf builds
-   * (no separate libnvcomp.so on the runtime classpath).
+   * LZ4 compress/decompress round-trip via {@code ai.rapids.cudf.nvcomp},
+   * covering nvcomp symbols linked into libcudf.
    */
   private static void nvcompLz4RoundTrip() {
     final long chunkSize = 64 * 1024;
     final Cuda.Stream stream = Cuda.DEFAULT_STREAM;
-    final long[] data = new long[4096];
-    for (int i = 0; i < data.length; i++) {
-      data[i] = i;
-    }
+    final long[] data = {0, 1, 2, 3, 4, 5, 6, 7};
 
-    DeviceMemoryBuffer original = null;
-    DeviceMemoryBuffer[] compressed = null;
-    DeviceMemoryBuffer decompressed = null;
-    try (HostMemoryBuffer hostIn =
-             DefaultHostMemoryAllocator.get().allocate(data.length * 8L)) {
+    try (HostMemoryBuffer hostIn = DefaultHostMemoryAllocator.get().allocate(data.length * 8L);
+         DeviceMemoryBuffer original = DeviceMemoryBuffer.allocate(hostIn.getLength());
+         DeviceMemoryBuffer decompressed = DeviceMemoryBuffer.allocate(hostIn.getLength())) {
       hostIn.setLongs(0, data, 0, data.length);
-      original = DeviceMemoryBuffer.allocate(hostIn.getLength());
       original.copyFromHostBuffer(hostIn);
-      // compress() takes ownership / closes inputs; keep a live ref for compare.
-      original.incRefCount();
+      original.incRefCount(); // compress() closes its inputs
 
-      BatchedLZ4Compressor comp = new BatchedLZ4Compressor(chunkSize, Long.MAX_VALUE);
-      compressed = comp.compress(new DeviceMemoryBuffer[]{original}, stream);
-      check(compressed != null && compressed.length == 1, "expected 1 compressed buffer");
-      check(compressed[0] != null && compressed[0].getLength() > 0,
-          "compressed buffer should be non-empty");
+      DeviceMemoryBuffer[] compressed =
+          new BatchedLZ4Compressor(chunkSize, Long.MAX_VALUE)
+              .compress(new DeviceMemoryBuffer[]{original}, stream);
+      check(compressed.length == 1 && compressed[0].getLength() > 0,
+          "expected one non-empty compressed buffer");
 
-      decompressed = DeviceMemoryBuffer.allocate(hostIn.getLength());
-      BatchedLZ4Decompressor decomp = new BatchedLZ4Decompressor(chunkSize);
-      // decompressAsync takes ownership of compressed buffers.
-      decomp.decompressAsync(compressed, new DeviceMemoryBuffer[]{decompressed}, stream);
-      compressed = null;
+      new BatchedLZ4Decompressor(chunkSize)
+          .decompressAsync(compressed, new DeviceMemoryBuffer[]{decompressed}, stream);
       stream.sync();
 
       try (HostMemoryBuffer hostOut =
@@ -152,20 +141,6 @@ public final class SmokeTestCudf {
         for (int i = 0; i < data.length; i++) {
           check(hostOut.getLong(i * 8L) == data[i], "nvcomp mismatch at long[" + i + "]");
         }
-      }
-    } finally {
-      if (original != null) {
-        original.close();
-      }
-      if (compressed != null) {
-        for (DeviceMemoryBuffer b : compressed) {
-          if (b != null) {
-            b.close();
-          }
-        }
-      }
-      if (decompressed != null) {
-        decompressed.close();
       }
     }
   }
@@ -218,7 +193,7 @@ public final class SmokeTestCudf {
       });
 
       runStep("nvcomp LZ4 round-trip", SmokeTestCudf::nvcompLz4RoundTrip);
-      runStep("Parquet chunked logger smoke", SmokeTestCudf::parquetChunkedLoggerSmoke);
+      runStep("Parquet chunked logger smoke test", SmokeTestCudf::parquetChunkedLoggerSmokeTest);
     }
     System.out.println("ALL STEPS PASSED");
   }

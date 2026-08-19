@@ -99,6 +99,11 @@ After assembling a Maven-repo tree, run the packaging smoke test suite under
 ./java/smoke-tests/bin/run.sh --maven-repo-dir /tmp/maven-repo
 ```
 
+In GitHub Actions, the PR job `java-cross-os-smoke-test` runs this suite after
+`java-tests`, re-downloading the same `cudf_java_<arch>_cu<major>` artifact and
+invoking [`ci/test_java_cross_os_smoke.sh`](../../ci/test_java_cross_os_smoke.sh),
+which assembles the Maven repo and calls `run.sh --cuda-version <major>`.
+
 ### Packaging-aware tests (local)
 
 Plain `cd java && mvn test` does not exercise the classifier JAR. Use

@@ -28,6 +28,7 @@ jobs:
       - java-build-matrix
       - java-build
       - java-tests
+      - java-cross-os-smoke-test
       - conda-notebook-tests
       - docs-build
       - publish-api-docs
@@ -598,6 +599,34 @@ jobs:
           JAVA_JAR="$(cudf_java_resolve_artifact_jar java_pkg)"
           export JAVA_JAR
           ci/test_packaged_java.sh
+  java-cross-os-smoke-test:
+    needs: [java-tests, java-build-matrix]
+    if: ${{ !cancelled() && needs.java-tests.result == 'success' }}
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.java-build-matrix.outputs.matrix) }}
+    runs-on: linux-${{ matrix.ARCH }}-gpu-l4-latest-1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Download java-build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cudf_java_${{ matrix.ARCH }}_cu${{ matrix.CUDA_MAJOR }}
+          path: java_pkg
+      - name: Run cudf-java cross-OS smoke test
+        env:
+          JAVA_PKG_DIR: java_pkg
+          CUDA_MAJOR: ${{ matrix.CUDA_MAJOR }}
+        run: ci/test_java_cross_os_smoke.sh
   conda-notebook-tests:
     needs: [conda-python-build, conda-python-build-noarch, changed-files]
     permissions:

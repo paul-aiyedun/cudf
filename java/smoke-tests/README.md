@@ -7,6 +7,10 @@ Use this to check that packages load and run across the RAPIDS support matrix:
 
 The main test is [`SmokeTestCudf`](src/main/java/ai/rapids/cudf/smoke_test/SmokeTestCudf.java).
 
+In CI, the PR job `java-cross-os-smoke-test` runs this suite after `java-tests`,
+re-downloading the same `cudf_java_<arch>_cu<major>` artifact and invoking
+[`ci/test_java_cross_os_smoke.sh`](../../ci/test_java_cross_os_smoke.sh).
+
 ## `run.sh` options
 
 Exactly one source mode is required:

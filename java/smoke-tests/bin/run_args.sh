@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Flag parsing for run.sh. Source, do not execute.
+# Sets globals consumed by run.sh (ShellCheck does not follow sourced files).
+# shellcheck disable=SC2034
 
 set_mode() {
   local next="$1"

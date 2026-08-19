@@ -91,24 +91,29 @@ extract_nested_zips() {
   done < <(find "${dest}" -type f -name '*.zip' ! -name 'artifact.zip')
 }
 
-# Hoist a nested ai/rapids/cudf tree to dest/, or assemble java-build classifier dirs.
+# Turn a GHA artifact into dest/ai/rapids/cudf/ (java-gather, java-build, or Central bundle).
 normalize_layout() {
   local dest="$1"
+  # maven-publish retain step nests central-bundle.zip inside the GHA zip.
   extract_nested_zips "${dest}"
 
-  local cudf_dir repo_root jar tmp
+  local cudf_dir repo_root jar classifier_dir jars_dir tmp
   cudf_dir="$(find "${dest}" -type d -path '*/ai/rapids/cudf' -print -quit)"
   if [[ -n "${cudf_dir}" ]]; then
+    # java-gather / signed bundle: .../ai/rapids/cudf -> parent of ai/
     repo_root="$(cd "${cudf_dir}/../../.." && pwd)"
     dest="$(cd "${dest}" && pwd)"
     if [[ "${repo_root}" != "${dest}" ]]; then
       mv "${repo_root}/ai" "${dest}/"
     fi
   else
+    # java-build: .../cuda12/cudf-*-cuda12.jar -> parent of classifier dirs
     jar="$(find "${dest}" -type f -name 'cudf-*-cuda*.jar' -print -quit)"
     if [[ -n "${jar}" ]]; then
+      classifier_dir="$(dirname "${jar}")"
+      jars_dir="$(cd "${classifier_dir}/.." && pwd)"
       tmp="$(mktemp -d "${dest}/.assemble.XXXXXX")"
-      bash "${ASSEMBLE_SCRIPT}" --jars-dir "$(dirname "$(dirname "${jar}")")" --output-dir "${tmp}"
+      bash "${ASSEMBLE_SCRIPT}" --jars-dir "${jars_dir}" --output-dir "${tmp}"
       mv "${tmp}/ai" "${dest}/"
       rm -rf "${tmp}"
     fi

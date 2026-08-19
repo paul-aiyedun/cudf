@@ -77,9 +77,9 @@ run_smoke_test() {
   local log_file="${CACHE_DIR}/logs/smoke-test-${classifier}-${os}.log"
   mkdir -p "${CACHE_DIR}/logs" "${CACHE_DIR}/m2-container"
 
-  local major tag
-  major="$(cuda_major_for_classifier "${classifier}")"
-  tag="$(ensure_image "${major}" "${os}")"
+  local cuda_major tag
+  cuda_major="$(cuda_major_for_classifier "${classifier}")"
+  tag="$(ensure_image "${cuda_major}" "${os}")"
   set_mvn_args "${classifier}"
 
   info "Smoke test classifier=${classifier} os=${os} version=${VERSION}"
@@ -93,11 +93,11 @@ run_smoke_test() {
 
 run_matrix() {
   local -a classifier_list os_list
-  split_csv classifier_list "${CLASSIFIERS}"
-  split_csv os_list "${OS_LIST}"
+  IFS=',' read -r -a classifier_list <<< "${CLASSIFIERS}"
+  IFS=',' read -r -a os_list <<< "${OS_LIST}"
 
   local failed=0 ran=0
-  local classifier os jar major
+  local classifier os jar cuda_major
   for classifier in "${classifier_list[@]}"; do
     if [[ "${USE_CENTRAL}" -eq 0 ]]; then
       jar="$(jar_for_classifier "${classifier}")"
@@ -106,10 +106,10 @@ run_matrix() {
         continue
       fi
     fi
-    major="$(cuda_major_for_classifier "${classifier}")"
+    cuda_major="$(cuda_major_for_classifier "${classifier}")"
     for os in "${os_list[@]}"; do
-      if ! base_image_for "${major}" "${os}" >/dev/null; then
-        warn "Skipping unsupported combination: classifier=${classifier} (cuda${major}) os=${os}"
+      if ! base_image_for "${cuda_major}" "${os}" >/dev/null; then
+        warn "Skipping unsupported combination: classifier=${classifier} (cuda${cuda_major}) os=${os}"
         continue
       fi
       ran=$((ran + 1))

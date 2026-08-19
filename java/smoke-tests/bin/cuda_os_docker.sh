@@ -8,9 +8,9 @@
 # CUDA 13: 13.0.1-runtime on Ubuntu 22.04 / 24.04 / Rocky 8; 13.3.1 on Ubuntu 26.04.
 
 base_image_for() {
-  local major="$1"
+  local cuda_major="$1"
   local os="$2"
-  case "${major}:${os}" in
+  case "${cuda_major}:${os}" in
     12:ubuntu22.04)  echo "nvidia/cuda:12.9.1-runtime-ubuntu22.04" ;;
     12:ubuntu24.04)  echo "nvidia/cuda:12.9.1-runtime-ubuntu24.04" ;;
     12:rockylinux8)  echo "nvidia/cuda:12.9.1-runtime-rockylinux8" ;;
@@ -33,12 +33,12 @@ dockerfile_for() {
 }
 
 ensure_image() {
-  local major="$1"
+  local cuda_major="$1"
   local os="$2"
   local base_image dockerfile
-  base_image="$(base_image_for "${major}" "${os}")"
+  base_image="$(base_image_for "${cuda_major}" "${os}")"
   dockerfile="$(dockerfile_for "${os}")"
-  local tag="cudf-java-smoke-test:cuda${major}-${os}"
+  local tag="cudf-java-smoke-test:cuda${cuda_major}-${os}"
   if ! docker image inspect "${tag}" >/dev/null 2>&1; then
     info "Building ${tag} (base=${base_image})"
     docker build \

@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Maven-repo, version, and classifier helpers for run.sh. Source, do not execute.
+# Sets globals consumed by run.sh (ShellCheck does not follow sourced files).
+# shellcheck disable=SC2034
 
 discover_version() {
   local cudf_dir="${MAVEN_REPO}/ai/rapids/cudf"

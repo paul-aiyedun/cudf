@@ -92,7 +92,7 @@ Step 3, and uploads the combined `cudf_java_maven_repo` artifact.
 
 ### Step 4 - Smoke tests (optional, local)
 
-After assembling a Maven-repo tree, run the packaging smoke suite under
+After assembling a Maven-repo tree, run the packaging smoke test suite under
 [`java/smoke-tests/`](../smoke-tests/README.md):
 
 ```bash

@@ -1,11 +1,13 @@
 # cudf-java smoke tests
 
-Smoke published `ai.rapids:cudf` classifier JARs under a Maven Central-style
-classpath (cudf + slf4j only).
+Smoke test published `ai.rapids:cudf` classifier JARs on a Maven Central-style
+classpath (cudf + slf4j only), the same way a consumer would depend on them.
+Use this to check that packages load and run across the RAPIDS support matrix:
+**OS × CUDA version × machine arch**.
 
-## Quick start
+## `run.sh` options
 
-Exactly one source mode is required.
+Exactly one source mode is required:
 
 ```bash
 # Local gather tree (must contain ai/rapids/cudf/)
@@ -20,62 +22,38 @@ Exactly one source mode is required.
 
 # Maven Central release (version required)
 ./java/smoke-tests/bin/run.sh --use-maven-central --version 25.12.0
-```
 
-Narrow to one CUDA major:
-
-```bash
+# Narrow to one CUDA major
 ./java/smoke-tests/bin/run.sh --maven-repo-dir /tmp/maven-repo --cuda-version 12
 ```
 
-## Source modes
-
-| Mode | Flag |
+| Flag | Meaning |
 |---|---|
-| GitHub Actions artifact | `--artifact-url URL` |
-| Local Maven-repo tree | `--maven-repo-dir DIR` |
-| `~/.m2/repository` | `--use-maven-home` |
-| Maven Central | `--use-maven-central` (requires `--version`) |
-
-Shared options:
-
-| Option | Meaning |
-|---|---|
-| `--version VER` | Pin `ai.rapids:cudf` version. Required for Central. For other modes, if omitted, exactly one version directory must exist under `ai/rapids/cudf/`. |
+| `--artifact-url URL` | Fetch a java-gather artifact via [`bin/fetch_bundle.sh`](bin/fetch_bundle.sh) (authenticated `gh`). Cached under `.cache/downloads/` (or `$CUDF_JAVA_SMOKE_OUTPUT_DIR`); reused if already valid. |
+| `--maven-repo-dir DIR` | Local Maven tree containing `ai/rapids/cudf/` |
+| `--use-maven-home` | Use `~/.m2/repository` |
+| `--use-maven-central` | Resolve from Maven Central (`--version` required) |
+| `--version VER` | Pin `ai.rapids:cudf`. Required for Central; otherwise, if omitted, exactly one version directory must exist under `ai/rapids/cudf/`. |
 | `--cuda-version 12\|13` | Narrow classifiers to this CUDA major |
 
-## Classifier selection
+Default classifiers by host arch:
 
-Without `--cuda-version`, by host arch:
+| Arch | Default | With `--cuda-version 12` | With `--cuda-version 13` |
+|---|---|---|---|
+| `x86_64` | `unclassified`, `cuda12`, `cuda13` | `unclassified`, `cuda12` | `cuda13` |
+| `aarch64` | `cuda12-arm64`, `cuda13-arm64` | `cuda12-arm64` | `cuda13-arm64` |
 
-- `x86_64`: `unclassified`, `cuda12`, `cuda13`
-- `aarch64`: `cuda12-arm64`, `cuda13-arm64`
-
-With `--cuda-version N`:
-
-- `x86_64` + 12: `unclassified`, `cuda12`
-- `x86_64` + 13: `cuda13`
-- `aarch64` + N: `cudaN-arm64`
-
-Missing JARs are warned and skipped. The run fails if no classifier is actually smoke tested, or if any smoke-tested classifier fails.
-
-After each classifier run, `run.sh` also requires the native `CUDF_LOG_WARN` from
-`parquetChunkedLoggerSmoke` (`Chunked Parquet reader: a chunk_read_limit`) in the
-captured smoke log under `.cache/logs/`.
-
-## Artifact downloads
-
-`--artifact-url` uses [`bin/fetch_bundle.sh`](bin/fetch_bundle.sh) (requires authenticated `gh`).
-Downloads land at:
-
-```text
-java/smoke-tests/.cache/downloads/runs/<run_id>/artifacts/<artifact_id>/
-```
-
-(or under `$CUDF_JAVA_SMOKE_OUTPUT_DIR`). If that destination already exists and
-contains `ai/rapids/cudf/`, the fetch warns and reuses it.
+Missing JARs are warned and skipped. The run fails if no classifier receives a
+smoke test, or if any classifier smoke test fails.
 
 ## Docker images
 
-`docker/Dockerfile.cuda{12,13}` (Ubuntu 24.04 CUDA runtime + OpenJDK 17 + Maven).
-Built on first use; rebuild with `docker build` / `docker rmi` if the Dockerfile changes.
+`run.sh` always runs inside Docker (CUDA runtime + OpenJDK 17 + Maven) covering
+the [RAPIDS platform support](https://docs.rapids.ai/platform-support/) matrix:
+
+- **OS:** Ubuntu 22.04, Ubuntu 24.04, Ubuntu 26.04, Rocky Linux 8
+- **CUDA:** 12, 13
+- **Arch:** `x86_64`, `aarch64`
+
+Images under `docker/` are built on first use; rebuild with `docker build` /
+`docker rmi` when a Dockerfile changes.

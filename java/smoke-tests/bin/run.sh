@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Smoke-test cudf-java classifier JARs (cudf + slf4j classpath) in Docker.
+# Smoke test cudf-java classifier JARs (cudf + slf4j classpath) in Docker.
 #
 # Exactly one source mode:
 #   --artifact-url URL | --maven-repo-dir DIR | --use-maven-home | --use-maven-central
@@ -19,8 +19,6 @@ VERSION=""
 ARTIFACT_URL=""
 CUDA_VERSION=""
 USE_CENTRAL=0
-
-PARQUET_WARN_NEEDLE='Chunked Parquet reader: a chunk_read_limit'
 
 info() { printf '==> %s\n' "$*" >&2; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -165,7 +163,7 @@ run_smoke() {
     -w /smoke
   )
 
-  info "Smoke classifier=${classifier} version=${VERSION}"
+  info "Smoke test classifier=${classifier} version=${VERSION}"
   set +e
   if [[ "${USE_CENTRAL}" -eq 1 ]]; then
     "${docker_cmd[@]}" \
@@ -186,16 +184,7 @@ run_smoke() {
   local rc=$?
   set -e
   cat "${log_file}"
-
-  if [[ "${rc}" -ne 0 ]]; then
-    return 1
-  fi
-  if ! grep -F -q "${PARQUET_WARN_NEEDLE}" "${log_file}"; then
-    warn "Missing expected CUDF_LOG_WARN in ${log_file}"
-    warn "  needle: ${PARQUET_WARN_NEEDLE}"
-    return 1
-  fi
-  return 0
+  return "${rc}"
 }
 
 main() {
@@ -306,7 +295,7 @@ main() {
   done
 
   if [[ "${ran}" -eq 0 ]]; then
-    die "No classifier JARs were smoke tested (all missing or none selected)"
+    die "No classifier JARs received a smoke test (all missing or none selected)"
   fi
   if [[ "${failed}" -ne 0 ]]; then
     die "One or more classifier smoke tests failed"

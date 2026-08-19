@@ -104,7 +104,7 @@ public final class SanityCudf {
             }
           }
         }
-        check(rows == 5, "expected 5 rows from chunked parquet logger smoke");
+        check(rows == 5, "expected 5 rows from chunked parquet logger smoke test");
       }
     }
   }
@@ -220,9 +220,9 @@ public final class SanityCudf {
       nvcompLz4RoundTrip();
       ok("nvcomp LZ4 round-trip");
 
-      step(8, "Parquet chunked logger smoke");
+      step(8, "Parquet chunked logger smoke test");
       parquetChunkedLoggerSmoke();
-      ok("Parquet chunked logger smoke (CUDF_LOG_WARN path)");
+      ok("Parquet chunked logger smoke test (CUDF_LOG_WARN path)");
 
       step(9, "Resource close");
       ok("Clean close via try-with-resources");

@@ -24,20 +24,19 @@ import ai.rapids.cudf.nvcomp.BatchedLZ4Compressor;
 import ai.rapids.cudf.nvcomp.BatchedLZ4Decompressor;
 
 /**
- * Core cudf-java smoke test exercised once per published classifier JAR.
- * Includes a small nvcomp LZ4 round-trip so static-libcudf JARs exercise
- * nvcomp symbols linked into libcudf (not a separate libnvcomp.so), and a
- * chunked Parquet DataSource read that triggers CUDF_LOG_WARN (native
- * rapids_logger / spdlog path) when pass_read_limit is derived.
+ * Smoke test for a published cudf-java classifier JAR. Runs once per JAR with
+ * only {@code ai.rapids:cudf} + slf4j on the classpath to verify that the
+ * packaged native libraries load and a handful of core APIs work end-to-end.
  */
-public final class SanityCudf {
-  private SanityCudf() {}
+public final class SmokeTestCudf {
+  private SmokeTestCudf() {}
 
-  private static void step(int n, String label) {
-    System.out.printf("[%d/9] %s ...%n", n, label);
-  }
+  private static int stepCounter = 0;
 
-  private static void ok(String label) {
+  private static void runStep(String label, Runnable body) {
+    stepCounter++;
+    System.out.printf("[%d] %s ...%n", stepCounter, label);
+    body.run();
     System.out.println("OK: " + label);
   }
 
@@ -47,7 +46,7 @@ public final class SanityCudf {
     }
   }
 
-  /** Collect parquet bytes written via HostBufferConsumer. */
+  /** Collect parquet bytes written via {@link HostBufferConsumer}. */
   private static final class CollectingConsumer implements HostBufferConsumer, AutoCloseable {
     private final HostMemoryBuffer buffer = HostMemoryBuffer.allocate(1024 * 1024);
     private long offset = 0;
@@ -78,13 +77,13 @@ public final class SanityCudf {
 
   /**
    * Write a tiny parquet table, then open it with the DataSource-only
-   * ParquetChunkedReader ctor (chunk limit set, no pass limit). That native
-   * path calls derive_pass_read_limit() and emits CUDF_LOG_WARN - exercising
-   * the linked rapids_logger/spdlog stack without needing external libspdlog.
+   * {@link ParquetChunkedReader} ctor (chunk limit set, no pass limit). That
+   * native path calls {@code derive_pass_read_limit()} and emits
+   * {@code CUDF_LOG_WARN} - exercising the linked rapids_logger / spdlog stack
+   * without needing an external libspdlog.
    */
   private static void parquetChunkedLoggerSmoke() {
-    ParquetWriterOptions writeOpts =
-        ParquetWriterOptions.builder().withColumns(false, "a").build();
+    ParquetWriterOptions writeOpts = ParquetWriterOptions.builder().withColumns(false, "a").build();
     try (CollectingConsumer consumer = new CollectingConsumer()) {
       try (ColumnVector col = ColumnVector.fromInts(1, 2, 3, 4, 5);
            Table table = new Table(col);
@@ -109,7 +108,11 @@ public final class SanityCudf {
     }
   }
 
-  /** Minimal LZ4 compress/decompress round-trip via ai.rapids.cudf.nvcomp. */
+  /**
+   * Minimal LZ4 compress/decompress round-trip via {@code ai.rapids.cudf.nvcomp}.
+   * Exercises the nvcomp symbols linked into libcudf on static-libcudf builds
+   * (no separate libnvcomp.so on the runtime classpath).
+   */
   private static void nvcompLz4RoundTrip() {
     final long chunkSize = 64 * 1024;
     final Cuda.Stream stream = Cuda.DEFAULT_STREAM;
@@ -129,8 +132,7 @@ public final class SanityCudf {
       // compress() takes ownership / closes inputs; keep a live ref for compare.
       original.incRefCount();
 
-      BatchedLZ4Compressor comp =
-          new BatchedLZ4Compressor(chunkSize, Long.MAX_VALUE);
+      BatchedLZ4Compressor comp = new BatchedLZ4Compressor(chunkSize, Long.MAX_VALUE);
       compressed = comp.compress(new DeviceMemoryBuffer[]{original}, stream);
       check(compressed != null && compressed.length == 1, "expected 1 compressed buffer");
       check(compressed[0] != null && compressed[0].getLength() > 0,
@@ -140,7 +142,7 @@ public final class SanityCudf {
       BatchedLZ4Decompressor decomp = new BatchedLZ4Decompressor(chunkSize);
       // decompressAsync takes ownership of compressed buffers.
       decomp.decompressAsync(compressed, new DeviceMemoryBuffer[]{decompressed}, stream);
-      compressed = null; // owned/closed by decompressAsync
+      compressed = null;
       stream.sync();
 
       try (HostMemoryBuffer hostOut =
@@ -169,63 +171,54 @@ public final class SanityCudf {
   }
 
   public static void main(String[] args) {
-    step(1, "Native deps load");
     try (ColumnVector ints = ColumnVector.fromInts(1, 2, 3, 4, 5)) {
-      check(ints.getRowCount() == 5, "expected 5 rows after fromInts");
-      ok("Native deps load");
+      runStep("Native deps load", () ->
+          check(ints.getRowCount() == 5, "expected 5 rows after fromInts"));
 
-      step(2, "ColumnVector + Table");
-      try (ColumnVector more = ColumnVector.fromInts(10, 20, 30, 40, 50);
-           Table table = new Table(ints, more)) {
-        check(table.getNumberOfColumns() == 2, "expected 2 columns");
-        check(table.getRowCount() == 5, "expected 5 table rows");
-        ok("ColumnVector + Table");
-      }
+      runStep("ColumnVector + Table", () -> {
+        try (ColumnVector more = ColumnVector.fromInts(10, 20, 30, 40, 50);
+             Table table = new Table(ints, more)) {
+          check(table.getNumberOfColumns() == 2, "expected 2 columns");
+          check(table.getRowCount() == 5, "expected 5 table rows");
+        }
+      });
 
-      step(3, "Filter");
-      try (Scalar three = Scalar.fromInt(3);
-           ColumnVector mask = ints.binaryOp(BinaryOp.GREATER, three, DType.BOOL8);
-           Table table = new Table(ints);
-           Table filtered = table.filter(mask)) {
-        check(filtered.getRowCount() == 2, "expected 2 rows after filter (>3)");
-        ok("Filter");
-      }
+      runStep("Filter", () -> {
+        try (Scalar three = Scalar.fromInt(3);
+             ColumnVector mask = ints.binaryOp(BinaryOp.GREATER, three, DType.BOOL8);
+             Table table = new Table(ints);
+             Table filtered = table.filter(mask)) {
+          check(filtered.getRowCount() == 2, "expected 2 rows after filter (>3)");
+        }
+      });
 
-      step(4, "Aggregation");
-      try (Scalar sum = ints.sum(DType.INT64)) {
-        check(sum.isValid(), "sum scalar should be valid");
-        check(sum.getLong() == 15L, "sum should be 15");
-        ok("Aggregation (sum)");
-      }
+      runStep("Aggregation (sum)", () -> {
+        try (Scalar sum = ints.sum(DType.INT64)) {
+          check(sum.isValid(), "sum scalar should be valid");
+          check(sum.getLong() == 15L, "sum should be 15");
+        }
+      });
 
-      step(5, "String column create + length");
-      try (ColumnVector strs = ColumnVector.fromStrings("a", "bb", "ccc");
-           ColumnVector lengths = strs.getCharLengths();
-           HostColumnVector hostLens = lengths.copyToHost()) {
-        check(strs.getRowCount() == 3, "expected 3 string rows");
-        check(hostLens.getInt(0) == 1, "len[0]==1");
-        check(hostLens.getInt(1) == 2, "len[1]==2");
-        check(hostLens.getInt(2) == 3, "len[2]==3");
-        ok("String column create + length");
-      }
+      runStep("String column create + length", () -> {
+        try (ColumnVector strs = ColumnVector.fromStrings("a", "bb", "ccc");
+             ColumnVector lengths = strs.getCharLengths();
+             HostColumnVector hostLens = lengths.copyToHost()) {
+          check(strs.getRowCount() == 3, "expected 3 string rows");
+          check(hostLens.getInt(0) == 1, "len[0]==1");
+          check(hostLens.getInt(1) == 2, "len[1]==2");
+          check(hostLens.getInt(2) == 3, "len[2]==3");
+        }
+      });
 
-      step(6, "Host round-trip");
-      try (HostColumnVector host = ints.copyToHost()) {
-        check(host.getInt(0) == 1, "host[0]==1");
-        check(host.getInt(4) == 5, "host[4]==5");
-        ok("Host round-trip");
-      }
+      runStep("Host round-trip", () -> {
+        try (HostColumnVector host = ints.copyToHost()) {
+          check(host.getInt(0) == 1, "host[0]==1");
+          check(host.getInt(4) == 5, "host[4]==5");
+        }
+      });
 
-      step(7, "nvcomp LZ4 round-trip");
-      nvcompLz4RoundTrip();
-      ok("nvcomp LZ4 round-trip");
-
-      step(8, "Parquet chunked logger smoke test");
-      parquetChunkedLoggerSmoke();
-      ok("Parquet chunked logger smoke test (CUDF_LOG_WARN path)");
-
-      step(9, "Resource close");
-      ok("Clean close via try-with-resources");
+      runStep("nvcomp LZ4 round-trip", SmokeTestCudf::nvcompLz4RoundTrip);
+      runStep("Parquet chunked logger smoke", SmokeTestCudf::parquetChunkedLoggerSmoke);
     }
     System.out.println("ALL STEPS PASSED");
   }

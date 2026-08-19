@@ -5,6 +5,8 @@ classpath (cudf + slf4j only), the same way a consumer would depend on them.
 Use this to check that packages load and run across the RAPIDS support matrix:
 **OS × CUDA version × machine arch**.
 
+The main test is [`SmokeTestCudf`](src/main/java/ai/rapids/cudf/smoke/SmokeTestCudf.java).
+
 ## `run.sh` options
 
 Exactly one source mode is required:
@@ -25,6 +27,9 @@ Exactly one source mode is required:
 
 # Narrow to one CUDA major
 ./java/smoke-tests/bin/run.sh --maven-repo-dir /tmp/maven-repo --cuda-version 12
+
+# Narrow to a subset of OSes
+./java/smoke-tests/bin/run.sh --maven-repo-dir /tmp/maven-repo --os ubuntu24.04
 ```
 
 | Flag | Meaning |
@@ -35,6 +40,7 @@ Exactly one source mode is required:
 | `--use-maven-central` | Resolve from Maven Central (`--version` required) |
 | `--version VER` | Pin `ai.rapids:cudf`. Required for Central; otherwise, if omitted, exactly one version directory must exist under `ai/rapids/cudf/`. |
 | `--cuda-version 12\|13` | Narrow classifiers to this CUDA major |
+| `--os LIST` | Comma-separated OS list. Default: `ubuntu22.04,ubuntu24.04,ubuntu26.04,rockylinux8` |
 
 Default classifiers by host arch:
 
@@ -43,17 +49,30 @@ Default classifiers by host arch:
 | `x86_64` | `unclassified`, `cuda12`, `cuda13` | `unclassified`, `cuda12` | `cuda13` |
 | `aarch64` | `cuda12-arm64`, `cuda13-arm64` | `cuda12-arm64` | `cuda13-arm64` |
 
-Missing JARs are warned and skipped. The run fails if no classifier receives a
-smoke test, or if any classifier smoke test fails.
+Missing classifier JARs and unsupported (classifier × OS) pairs are warned and
+skipped. The run fails if no combination receives a smoke test, or if any smoke
+test fails.
 
 ## Docker images
 
-`run.sh` always runs inside Docker (CUDA runtime + OpenJDK 17 + Maven) covering
-the [RAPIDS platform support](https://docs.rapids.ai/platform-support/) matrix:
+`run.sh` always runs inside Docker (CUDA runtime + OpenJDK 17 + Maven), building
+one image per (CUDA major × OS) cell of the [RAPIDS platform support](https://docs.rapids.ai/platform-support/)
+matrix:
 
-- **OS:** Ubuntu 22.04, Ubuntu 24.04, Ubuntu 26.04, Rocky Linux 8
-- **CUDA:** 12, 13
-- **Arch:** `x86_64`, `aarch64`
+| OS | CUDA 12 base image | CUDA 13 base image |
+|---|---|---|
+| `ubuntu22.04` | `nvidia/cuda:12.9.1-runtime-ubuntu22.04` | `nvidia/cuda:13.0.1-runtime-ubuntu22.04` |
+| `ubuntu24.04` | `nvidia/cuda:12.9.1-runtime-ubuntu24.04` | `nvidia/cuda:13.0.1-runtime-ubuntu24.04` |
+| `ubuntu26.04` | *(skipped — no official image)* | `nvidia/cuda:13.3.1-runtime-ubuntu26.04` |
+| `rockylinux8` | `nvidia/cuda:12.9.1-runtime-rockylinux8` | `nvidia/cuda:13.0.1-runtime-rockylinux8` |
 
-Images under `docker/` are built on first use; rebuild with `docker build` /
-`docker rmi` when a Dockerfile changes.
+CUDA 12 × Ubuntu 26.04 is skipped: NVIDIA does not publish a CUDA 12
+`ubuntu26.04` base image, and [`rapidsai/ci-imgs`](https://github.com/rapidsai/ci-imgs/blob/main/matrix.yaml)
+explicitly excludes that pair.
+
+Arches: `x86_64`, `aarch64` (host arch drives the classifier list).
+
+Images under `docker/` (`Dockerfile.ubuntu`, `Dockerfile.rocky`, both accept
+`--build-arg BASE_IMAGE=...`) are built on first use and tagged
+`cudf-java-smoke:cuda<major>-<os>`. Rebuild with `docker build` / `docker rmi`
+when a Dockerfile changes.

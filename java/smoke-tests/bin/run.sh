@@ -12,7 +12,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SMOKE_TESTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CACHE_DIR="${SMOKE_TESTS_ROOT}/.cache"
+CACHE_DIR="${SMOKE_TESTS_CACHE_DIR:-${SMOKE_TESTS_ROOT}/.cache}"
 
 # shellcheck source=logging.sh
 . "${SCRIPT_DIR}/logging.sh"

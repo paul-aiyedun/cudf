@@ -3,11 +3,21 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-RUN dnf --enablerepo=powertools install -y \
+# Rocky 8's packaged maven is 3.5.4, older than what exec-maven-plugin 3.x
+# requires (>= 3.6.3). Install a modern Apache Maven from tarball instead.
+ARG MAVEN_VERSION=3.9.9
+RUN dnf install -y \
       java-17-openjdk-devel \
-      maven \
       ca-certificates \
+      tar \
+      gzip \
  && dnf clean all \
+ && curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+      -o /tmp/apache-maven.tar.gz \
+ && mkdir -p /opt/apache-maven \
+ && tar -xzf /tmp/apache-maven.tar.gz --strip-components=1 -C /opt/apache-maven \
+ && rm -f /tmp/apache-maven.tar.gz \
+ && ln -s /opt/apache-maven/bin/mvn /usr/local/bin/mvn \
  && ln -sfn "$(dirname $(dirname $(readlink -f $(which javac))))" /usr/lib/jvm/cudf-smoke-test-jdk
 
 ENV JAVA_HOME=/usr/lib/jvm/cudf-smoke-test-jdk

@@ -161,6 +161,73 @@ jobs:
       arch: "amd64"
       container_image: "rapidsai/ci-conda:26.10-latest"
       script: "ci/test_java.sh"
+  # Test the packaged cuDF Java JAR built by build.yaml java-build for every
+  # Maven classifier, then smoke test the packaged classifier JARs across
+  # the RAPIDS OS support matrix.
+  java-build-matrix:
+    permissions:
+      contents: read
+    uses: rapidsai/shared-workflows/.github/workflows/compute-matrix.yaml@main
+    with:
+      build_type: ${{ inputs.build_type }}
+      matrix_name: conda-cpp-build
+      matrix_filter: 'map(. + {CUDA_MAJOR: (.CUDA_VER | split(".") | .[0])})'
+  java-tests:
+    needs: [java-build-matrix]
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+      pull-requests: read
+    secrets: inherit # zizmor: ignore[secrets-inherit]
+    uses: rapidsai/shared-workflows/.github/workflows/custom-job.yaml@main
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.java-build-matrix.outputs.matrix) }}
+    with:
+      build_type: ${{ inputs.build_type }}
+      branch: ${{ inputs.branch }}
+      date: ${{ inputs.date }}
+      sha: ${{ inputs.sha }}
+      arch: ${{ matrix.ARCH }}
+      node_type: "gpu-l4-latest-1"
+      container_image: "rapidsai/ci-wheel:26.10-cuda${{ matrix.CUDA_VER }}-${{ matrix.LINUX_VER }}-py${{ matrix.PY_VER }}"
+      script: "ci/test_packaged_java.sh"
+  java-cross-os-smoke-test:
+    needs: [java-tests, java-build-matrix]
+    if: ${{ !cancelled() && needs.java-tests.result == 'success' }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.java-build-matrix.outputs.matrix) }}
+    runs-on: linux-${{ matrix.ARCH }}-gpu-l4-latest-1
+    defaults:
+      run:
+        shell: bash
+    env:
+      RAPIDS_BUILD_TYPE: ${{ inputs.build_type }}
+      RAPIDS_REPOSITORY: ${{ github.repository }}
+      RAPIDS_REF_NAME: ${{ inputs.branch }}
+      RAPIDS_NIGHTLY_DATE: ${{ inputs.date }}
+      RAPIDS_SHA: ${{ inputs.sha }}
+      RAPIDS_CUDA_VERSION: ${{ matrix.CUDA_VER }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - name: Install RAPIDS gha-tools
+        run: |
+          wget -q https://github.com/rapidsai/gha-tools/releases/latest/download/tools.tar.gz -O - \
+            | tar -xz -C /usr/local/bin
+      - name: Run cudf-java cross-OS smoke test
+        run: ci/test_java_cross_os_smoke.sh
   conda-notebook-tests:
     permissions:
       actions: read

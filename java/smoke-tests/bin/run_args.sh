@@ -39,6 +39,8 @@ Options:
   --cuda-version 12|13    Narrow classifiers to this CUDA major
   --os LIST               Comma-separated OS list
                           (default: ${DEFAULT_OS_LIST})
+  --hide-nvrtc            Move libnvrtc* out of the image search path, to
+                          exercise the missing-NVRTC JIT failure path
   -h, --help
 EOF
 }
@@ -83,6 +85,10 @@ parse_args() {
         require_value "$1" "${2:-}"
         OS_LIST="$2"
         shift 2
+        ;;
+      --hide-nvrtc)
+        HIDE_NVRTC=1
+        shift
         ;;
       *) die "Unknown argument: $1 (try --help)" ;;
     esac

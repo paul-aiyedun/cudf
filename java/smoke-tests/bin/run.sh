@@ -32,6 +32,7 @@ VERSION=""
 ARTIFACT_URL=""
 CUDA_VERSION=""
 USE_CENTRAL=0
+HIDE_NVRTC=0
 
 CLASSIFIERS=""
 MVN_ARGS=()
@@ -60,6 +61,9 @@ docker_run_smoke_test() {
     -v "${CACHE_DIR}/m2-container:/tmp/.m2"
     -w /smoke-test
   )
+  if [[ -n "${LIBCUDF_JIT_ENABLED+x}" ]]; then
+    docker_cmd+=(-e "LIBCUDF_JIT_ENABLED=${LIBCUDF_JIT_ENABLED}")
+  fi
   local -a mvn_extra=(-Dmaven.repo.local=/tmp/.m2/repository)
   if [[ "${USE_CENTRAL}" -eq 1 ]]; then
     mvn_extra+=(-Dcudf.smoke-test.central=true)
@@ -74,12 +78,17 @@ docker_run_smoke_test() {
 run_smoke_test() {
   local classifier="$1"
   local os="$2"
-  local log_file="${CACHE_DIR}/logs/smoke-test-${classifier}-${os}.log"
+  local suffix=""
+  [[ "${HIDE_NVRTC}" -eq 1 ]] && suffix="-nonvrtc"
+  local log_file="${CACHE_DIR}/logs/smoke-test-${classifier}-${os}${suffix}.log"
   mkdir -p "${CACHE_DIR}/logs" "${CACHE_DIR}/m2-container"
 
   local cuda_major tag
   cuda_major="$(cuda_major_for_classifier "${classifier}")"
   tag="$(ensure_image "${cuda_major}" "${os}")"
+  if [[ "${HIDE_NVRTC}" -eq 1 ]]; then
+    tag="$(ensure_image_without_nvrtc "${tag}")"
+  fi
   set_mvn_args "${classifier}"
 
   info "Smoke test classifier=${classifier} os=${os} version=${VERSION}"
@@ -150,6 +159,9 @@ main() {
     info "Maven repo:  ${MAVEN_REPO}"
   fi
   info "Version:     ${VERSION}"
+  if [[ "${HIDE_NVRTC}" -eq 1 ]]; then
+    info "NVRTC:       hidden (--hide-nvrtc)"
+  fi
   info "Classifiers: ${CLASSIFIERS}"
   info "OSes:        ${OS_LIST}"
 

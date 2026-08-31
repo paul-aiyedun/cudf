@@ -20,6 +20,8 @@ import ai.rapids.cudf.ParquetWriterOptions;
 import ai.rapids.cudf.Scalar;
 import ai.rapids.cudf.Table;
 import ai.rapids.cudf.TableWriter;
+import ai.rapids.cudf.ast.ColumnReference;
+import ai.rapids.cudf.ast.CompiledExpression;
 import ai.rapids.cudf.nvcomp.BatchedLZ4Compressor;
 import ai.rapids.cudf.nvcomp.BatchedLZ4Decompressor;
 
@@ -189,6 +191,17 @@ public final class SmokeTestCudf {
         try (HostColumnVector host = ints.copyToHost()) {
           check(host.getInt(0) == 1, "host[0]==1");
           check(host.getInt(4) == 5, "host[4]==5");
+        }
+      });
+
+      runStep("AST computeColumn", () -> {
+        try (Table table = new Table(ints);
+             CompiledExpression expression = new ColumnReference(0).compile();
+             ColumnVector result = expression.computeColumn(table);
+             HostColumnVector host = result.copyToHost()) {
+          check(result.getRowCount() == 5, "expected 5 AST result rows");
+          check(host.getInt(0) == 1, "AST result[0]==1");
+          check(host.getInt(4) == 5, "AST result[4]==5");
         }
       });
 

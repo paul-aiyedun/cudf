@@ -49,3 +49,21 @@ ensure_image() {
   fi
   echo "${tag}"
 }
+
+# Derive an image with every libnvrtc* moved out of the loader's search path, to
+# exercise the JIT failure path on a host that lacks NVRTC. The files must be
+# moved rather than renamed in place, otherwise ldconfig recreates the soname
+# symlink and dlopen still succeeds.
+ensure_image_without_nvrtc() {
+  local base_tag="$1"
+  local tag="${base_tag}-nonvrtc"
+  if ! docker image inspect "${tag}" >/dev/null 2>&1; then
+    info "Building ${tag} (NVRTC hidden)"
+    docker build -t "${tag}" -f - "${SMOKE_TESTS_ROOT}/docker" >&2 << EOF
+FROM ${base_tag}
+USER root
+RUN mkdir -p /opt/nvrtc-hidden && find / -xdev -name 'libnvrtc*' -print -exec mv -t /opt/nvrtc-hidden {} + && (ldconfig || true) && ! (ldconfig -p | grep -q nvrtc)
+EOF
+  fi
+  echo "${tag}"
+}

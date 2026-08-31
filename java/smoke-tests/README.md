@@ -45,6 +45,7 @@ Exactly one source mode is required:
 | `--version VER` | Pin `ai.rapids:cudf`. Required for Central; otherwise, if omitted, exactly one version directory must exist under `ai/rapids/cudf/`. |
 | `--cuda-version 12\|13` | Narrow classifiers to this CUDA major |
 | `--os LIST` | Comma-separated OS list. Default: `ubuntu22.04,ubuntu24.04,ubuntu26.04,rockylinux8` |
+| `--hide-nvrtc` | Move `libnvrtc*` out of the image (`/opt/nvrtc-hidden`) so JIT cannot `dlopen` NVRTC |
 
 Default classifiers by host arch:
 
@@ -56,6 +57,14 @@ Default classifiers by host arch:
 Missing classifier JARs and unsupported (classifier × OS) pairs are warned and
 skipped. The run fails if no combination receives a smoke test, or if any smoke
 test fails.
+
+Set `LIBCUDF_JIT_ENABLED=true` on the host to pass it into each container and
+exercise the JIT backend in the `AST computeColumn` step. CUDA runtime images
+often already ship `libnvrtc.so.<major>`; use `--hide-nvrtc` to reproduce a
+host without NVRTC.
+
+x86 follow-up (26.06 vs 26.08.1, NVRTC hidden):
+[`JIT_NVRTC_INVESTIGATION.md`](JIT_NVRTC_INVESTIGATION.md).
 
 ## Docker images
 

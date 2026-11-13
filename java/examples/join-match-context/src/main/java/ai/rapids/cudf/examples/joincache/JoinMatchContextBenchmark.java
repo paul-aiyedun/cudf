@@ -23,7 +23,8 @@ import java.util.function.LongSupplier;
  * Times partitioned inner join retrieval with and without a {@link JoinMatchContext}.
  *
  * <p>The data is a star-schema join. A dimension table with unique keys is the build side and a
- * larger fact table with skewed foreign keys is the probe side.</p>
+ * larger fact table with skewed foreign keys is the probe side. Both paths first learn the total
+ * output size and then produce the gather maps one partition at a time.</p>
  */
 public final class JoinMatchContextBenchmark {
   private JoinMatchContextBenchmark() {}
@@ -53,7 +54,10 @@ public final class JoinMatchContextBenchmark {
          HashJoin hashJoin = new HashJoin(dim, false)) {
       ContiguousTable[] slices = fact.contiguousSplit(Arrays.copyOfRange(bounds, 1, partitions));
       try {
+        // Without a context the size comes from a separate count, so every fact row is probed
+        // twice. The context probes once and reuses the matches for each partition.
         Result uncached = measure(iterations, () -> {
+          fact.innerJoinRowCount(hashJoin);
           long rows = 0;
           for (ContiguousTable slice : slices) {
             rows += countAndClose(slice.getTable().innerJoinGatherMaps(hashJoin));
@@ -74,11 +78,13 @@ public final class JoinMatchContextBenchmark {
             + "fact=%,d rows (skewed keys), partitions=%d%n", buildRows, probeRows, partitions);
         System.out.printf("Fact rows matched: %.1f%%   fact rows hitting the top 1%% of keys: %.1f%%%n",
             100.0 * cached.rows / probeRows, 100.0 * hotRows(factKeys, buildRows) / probeRows);
-        uncached.print("without cache");
-        cached.print("with cache");
+        System.out.printf("uncached  median %8.2f ms   min %8.2f ms   rows %,d%n",
+            uncached.medianMs, uncached.minMs, uncached.rows);
+        System.out.printf("cached    median %8.2f ms   min %8.2f ms   rows %,d%n",
+            cached.medianMs, cached.minMs, cached.rows);
         System.out.printf("speedup=%.2fx%n", uncached.medianMs / cached.medianMs);
         if (uncached.rows != cached.rows) {
-          System.err.printf("Row count mismatch: %d vs %d%n", uncached.rows, cached.rows);
+          System.err.println("row counts differ between the two paths");
           System.exit(1);
         }
       } finally {
@@ -148,11 +154,6 @@ public final class JoinMatchContextBenchmark {
       this.medianMs = medianMs;
       this.minMs = minMs;
       this.rows = rows;
-    }
-
-    void print(String label) {
-      System.out.printf("%-14s median %9.2f ms   min %9.2f ms   output rows %,d%n",
-          label + ":", medianMs, minMs, rows);
     }
   }
 }

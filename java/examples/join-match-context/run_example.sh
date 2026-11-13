@@ -27,7 +27,9 @@ usage() {
 Usage: $(basename "$0") [options]
 
 Compare partitioned inner join retrieval with and without a JoinMatchContext
-on a star-schema join (unique dimension keys, skewed fact keys).
+on a star-schema join (unique dimension keys, skewed fact keys). Without a
+context, the total size is counted first and then each partition is joined,
+so every fact row is probed twice. The context probes each row once.
 
 Options:
   --scale small|medium|large|xlarge   Preset size (default: small)

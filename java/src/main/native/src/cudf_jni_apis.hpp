@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -8,8 +8,31 @@
 #include "jni_utils.hpp"
 
 #include <cudf/contiguous_split.hpp>
+#include <cudf/types.hpp>
+
+#include <rmm/device_uvector.hpp>
+
+#include <memory>
+#include <utility>
 
 namespace cudf::jni {
+
+/**
+ * Convert a pair of cudf gather map device vectors into the long array layout Java expects.
+ * Indices: 0 size per map in bytes, 1 left device address, 2 left rmm buffer handle,
+ * 3 right device address, 4 right rmm buffer handle.
+ */
+jlongArray gather_maps_to_java(
+  JNIEnv* env,
+  std::pair<std::unique_ptr<rmm::device_uvector<cudf::size_type>>,
+            std::unique_ptr<rmm::device_uvector<cudf::size_type>>> maps);
+
+/**
+ * Convert a single cudf gather map device vector into the long array layout Java expects.
+ * Indices: 0 size in bytes, 1 device address, 2 rmm buffer handle.
+ */
+jlongArray gather_map_to_java(JNIEnv* env,
+                              std::unique_ptr<rmm::device_uvector<cudf::size_type>> map);
 
 /**
  * @brief Detach all columns from the specified table, and pointers to them as an array.

@@ -2776,7 +2776,7 @@ public final class Table implements AutoCloseable {
         target.getNativeView()));
   }
 
-  private static GatherMap[] buildJoinGatherMaps(long[] gatherMapData) {
+  static GatherMap[] buildJoinGatherMaps(long[] gatherMapData) {
     long bufferSize = gatherMapData[0];
     long leftAddr = gatherMapData[1];
     long leftHandle = gatherMapData[2];
@@ -2986,6 +2986,22 @@ public final class Table implements AutoCloseable {
     long[] gatherMapData = leftHashJoinGatherMapsWithCount(getNativeView(),
         rightHash.getNativeView(), outputRowCount);
     return buildJoinGatherMaps(gatherMapData);
+  }
+
+  /**
+   * Caches probe state for a left equi-join so a partitioned retrieval can skip the second probe.
+   * The returned context holds the per-row match counts and must be closed. The HashJoin must
+   * stay open for the lifetime of the context.
+   *
+   * @param rightHash hash table built from join key columns from the right table
+   * @return a match context for use with {@link JoinMatchContext#partitionGatherMaps(int, int)}
+   */
+  public JoinMatchContext leftJoinMatchContext(HashJoin rightHash) {
+    if (getNumberOfColumns() != rightHash.getNumberOfColumns()) {
+      throw new IllegalArgumentException("column count mismatch, this: " + getNumberOfColumns() +
+          "rightKeys: " + rightHash.getNumberOfColumns());
+    }
+    return new JoinMatchContext(this, rightHash, JoinKind.LEFT);
   }
 
   /**
@@ -3279,6 +3295,22 @@ public final class Table implements AutoCloseable {
   }
 
   /**
+   * Caches probe state for an inner equi-join so a partitioned retrieval can skip the second
+   * probe. The returned context holds the per-row match counts and must be closed. The HashJoin
+   * must stay open for the lifetime of the context.
+   *
+   * @param rightHash hash table built from join key columns from the right table
+   * @return a match context for use with {@link JoinMatchContext#partitionGatherMaps(int, int)}
+   */
+  public JoinMatchContext innerJoinMatchContext(HashJoin rightHash) {
+    if (getNumberOfColumns() != rightHash.getNumberOfColumns()) {
+      throw new IllegalArgumentException("Column count mismatch, this: " + getNumberOfColumns() +
+          "rightKeys: " + rightHash.getNumberOfColumns());
+    }
+    return new JoinMatchContext(this, rightHash, JoinKind.INNER);
+  }
+
+  /**
    * Computes the number of rows from the result of an inner join between two tables when a
    * conditional expression is true. It is assumed this table instance holds the columns from
    * the left table, and the table argument represents the columns from the right table.
@@ -3524,6 +3556,24 @@ public final class Table implements AutoCloseable {
     long[] gatherMapData = fullHashJoinGatherMapsWithCount(getNativeView(),
         rightHash.getNativeView(), outputRowCount);
     return buildJoinGatherMaps(gatherMapData);
+  }
+
+  /**
+   * Caches probe state for a full equi-join so a partitioned retrieval can skip the second probe.
+   * The returned context holds the per-row match counts and must be closed. The HashJoin must
+   * stay open for the lifetime of the context. Collect partition results and call
+   * {@link JoinMatchContext#finalizePartitionedFullJoin(GatherMap[], GatherMap[], long, long)}
+   * to append the unmatched right rows.
+   *
+   * @param rightHash hash table built from join key columns from the right table
+   * @return a match context for use with {@link JoinMatchContext#partitionGatherMaps(int, int)}
+   */
+  public JoinMatchContext fullJoinMatchContext(HashJoin rightHash) {
+    if (getNumberOfColumns() != rightHash.getNumberOfColumns()) {
+      throw new IllegalArgumentException("Column count mismatch, this: " + getNumberOfColumns() +
+          "rightKeys: " + rightHash.getNumberOfColumns());
+    }
+    return new JoinMatchContext(this, rightHash, JoinKind.FULL);
   }
 
   /**

@@ -58,11 +58,8 @@ cudf::join_match_context build_match_context(cudf::hash_join const& hash,
 
 extern "C" {
 
-JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_JoinMatchContext_create(JNIEnv* env,
-                                                                    jclass,
-                                                                    jlong j_left_view,
-                                                                    jlong j_hash_join,
-                                                                    jint j_kind)
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_JoinMatchContext_create(
+  JNIEnv* env, jclass, jlong j_left_view, jlong j_hash_join, jint j_kind)
 {
   JNI_NULL_CHECK(env, j_left_view, "left table is null", 0);
   JNI_NULL_CHECK(env, j_hash_join, "hash join is null", 0);
@@ -73,12 +70,12 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_JoinMatchContext_create(JNIEnv* env,
     auto const left = reinterpret_cast<cudf::table_view const*>(j_left_view);
     auto const hash = reinterpret_cast<cudf::hash_join const*>(j_hash_join);
 
-    auto match_ctx = std::make_unique<cudf::join_match_context>(
-      build_match_context(*hash, *left, j_kind));
-    auto part_ctx                 = std::make_unique<cudf::join_partition_context>();
-    part_ctx->left_table_context  = std::move(match_ctx);
-    part_ctx->left_start_idx      = 0;
-    part_ctx->left_end_idx        = 0;
+    auto match_ctx =
+      std::make_unique<cudf::join_match_context>(build_match_context(*hash, *left, j_kind));
+    auto part_ctx                = std::make_unique<cudf::join_partition_context>();
+    part_ctx->left_table_context = std::move(match_ctx);
+    part_ctx->left_start_idx     = 0;
+    part_ctx->left_end_idx       = 0;
     return cudf::jni::release_as_jlong(part_ctx);
   }
   JNI_CATCH(env, 0);
@@ -124,25 +121,19 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_JoinMatchContext_matchCountsColumn(J
     auto const counts = ctx->left_table_context->match_counts();
     auto const stream = cudf::get_default_stream();
     rmm::device_buffer data(counts.data(), counts.size_bytes(), stream);
-    auto column = std::make_unique<cudf::column>(
-      cudf::data_type{cudf::type_id::INT32},
-      static_cast<cudf::size_type>(counts.size()),
-      std::move(data),
-      cudf::create_null_mask(0, cudf::mask_state::UNALLOCATED),
-      0);
+    auto column =
+      std::make_unique<cudf::column>(cudf::data_type{cudf::type_id::INT32},
+                                     static_cast<cudf::size_type>(counts.size()),
+                                     std::move(data),
+                                     cudf::create_null_mask(0, cudf::mask_state::UNALLOCATED),
+                                     0);
     return cudf::jni::release_as_jlong(column);
   }
   JNI_CATCH(env, 0);
 }
 
-JNIEXPORT jlongArray JNICALL
-Java_ai_rapids_cudf_JoinMatchContext_partitionGatherMaps(JNIEnv* env,
-                                                         jclass,
-                                                         jlong j_handle,
-                                                         jlong j_hash_join,
-                                                         jint j_kind,
-                                                         jint j_start,
-                                                         jint j_end)
+JNIEXPORT jlongArray JNICALL Java_ai_rapids_cudf_JoinMatchContext_partitionGatherMaps(
+  JNIEnv* env, jclass, jlong j_handle, jlong j_hash_join, jint j_kind, jint j_start, jint j_end)
 {
   JNI_NULL_CHECK(env, j_handle, "join match context is null", NULL);
   JNI_NULL_CHECK(env, j_hash_join, "hash join is null", NULL);
@@ -150,8 +141,8 @@ Java_ai_rapids_cudf_JoinMatchContext_partitionGatherMaps(JNIEnv* env,
   JNI_TRY
   {
     cudf::jni::auto_set_device(env);
-    auto ctx        = reinterpret_cast<cudf::join_partition_context*>(j_handle);
-    auto const hash = reinterpret_cast<cudf::hash_join const*>(j_hash_join);
+    auto ctx            = reinterpret_cast<cudf::join_partition_context*>(j_handle);
+    auto const hash     = reinterpret_cast<cudf::hash_join const*>(j_hash_join);
     ctx->left_start_idx = static_cast<cudf::size_type>(j_start);
     ctx->left_end_idx   = static_cast<cudf::size_type>(j_end);
     return cudf::jni::gather_maps_to_java(env, dispatch_partitioned(*hash, *ctx, j_kind));
@@ -198,12 +189,12 @@ Java_ai_rapids_cudf_JoinMatchContext_finalizePartitionedFullJoin(JNIEnv* env,
                                static_cast<std::size_t>(right_lens[i]));
     }
 
-    return cudf::jni::gather_maps_to_java(env,
-                                          cudf::hash_join::finalize_partitioned_full_join(
-                                            left_spans,
-                                            right_spans,
-                                            static_cast<cudf::size_type>(j_left_rows),
-                                            static_cast<cudf::size_type>(j_right_rows)));
+    return cudf::jni::gather_maps_to_java(
+      env,
+      cudf::hash_join::finalize_partitioned_full_join(left_spans,
+                                                      right_spans,
+                                                      static_cast<cudf::size_type>(j_left_rows),
+                                                      static_cast<cudf::size_type>(j_right_rows)));
   }
   JNI_CATCH(env, NULL);
 }
